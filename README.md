@@ -26,6 +26,8 @@ This command starts multiple Python processes on one machine for parallel comput
 Set "num_workers=X" for parallelizing ARS across X CPUs.
 For parallelzing ARS on a cluster follow the instructions here: http://ray.readthedocs.io/en/latest/using-ray-on-a-large-cluster.html.
 
+__NOTE: It is important to run the above command _after_ you have set the `LD_LIBRARY_PATH`. It is also important to run that command inside the ARS directory.__
+
 We recommend using single threaded linear algebra computations by setting: 
 ```
 export MKL_NUM_THREADS=1
