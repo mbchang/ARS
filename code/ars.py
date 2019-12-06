@@ -147,8 +147,8 @@ class ARSLearner(object):
     def __init__(self, env_name='HalfCheetah-v1',
                  policy_params=None,
                  num_workers=32, 
-                 num_deltas=320, 
-                 deltas_used=320,
+                 num_deltas=320,  # N
+                 deltas_used=320,  # b
                  delta_std=0.02, 
                  logdir=None, 
                  rollout_length=1000,
@@ -386,7 +386,7 @@ def run_ars(params):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--env_name', type=str, default='HalfCheetah-v1')
+    parser.add_argument('--env_name', type=str, default='HalfCheetah-v2')
     parser.add_argument('--n_iter', '-n', type=int, default=1000)
     parser.add_argument('--n_directions', '-nd', type=int, default=8)
     parser.add_argument('--deltas_used', '-du', type=int, default=8)
