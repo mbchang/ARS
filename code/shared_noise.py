@@ -16,6 +16,17 @@ def create_shared_noise():
     noise = np.random.RandomState(seed).randn(count).astype(np.float64)
     return noise
 
+def create_shared_noise_serial():
+    """
+    Create a large array of noise to be shared by all workers. Used 
+    for avoiding the communication of the random perturbations delta.
+    """
+
+    seed = 12345
+    count = 250000000
+    noise = np.random.RandomState(seed).randn(count).astype(np.float64)
+    return noise
+
 
 class SharedNoiseTable(object):
     def __init__(self, noise, seed = 11):
