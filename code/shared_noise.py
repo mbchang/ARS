@@ -27,7 +27,6 @@ def create_shared_noise_serial():
     noise = np.random.RandomState(seed).randn(count).astype(np.float64)
     return noise
 
-
 class SharedNoiseTable(object):
     def __init__(self, noise, seed = 11):
 

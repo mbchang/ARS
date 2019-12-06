@@ -88,7 +88,6 @@ class Worker(object):
         steps = 0
 
         for i in range(num_rollouts):
-            # print(i)
 
             if evaluate:
                 self.policy.update_weights(w_policy)
@@ -121,7 +120,6 @@ class Worker(object):
                 steps += pos_steps + neg_steps
 
                 rollout_rewards.append([pos_reward, neg_reward])
-                # print('after rollout_rewards', rollout_rewards, pos_reward, neg_reward)
                             
         return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps" : steps}
     
@@ -180,34 +178,19 @@ class ARSLearner(object):
         
         # create shared table for storing noise
         print("Creating deltas table.")
-        ####################################################################
         deltas_id = create_shared_noise_serial()
         self.deltas = SharedNoiseTable(deltas_id, seed = seed + 3)
-        # **************************************************************** #
-        # deltas_id = create_shared_noise.remote()
-        # self.deltas = SharedNoiseTable(ray.get(deltas_id), seed = seed + 3)
-        ####################################################################
         print('Created deltas table.')
 
         # initialize workers with different random seeds
         print('Initializing workers.') 
         self.num_workers = num_workers
-        ####################################################################
         self.workers = [Worker(seed + 7 * i,
                                       env_name=env_name,
                                       policy_params=policy_params,
                                       deltas=deltas_id,
                                       rollout_length=rollout_length,
                                       delta_std=delta_std) for i in range(num_workers)]
-        # **************************************************************** #
-        # self.workers = [Worker.remote(seed + 7 * i,
-        #                               env_name=env_name,
-        #                               policy_params=policy_params,
-        #                               deltas=deltas_id,
-        #                               rollout_length=rollout_length,
-        #                               delta_std=delta_std) for i in range(num_workers)]
-        ####################################################################
-
 
         # initialize policy 
         if policy_params['type'] == 'linear':
@@ -229,110 +212,24 @@ class ARSLearner(object):
             num_deltas = self.num_deltas
         else:
             num_deltas = num_rollouts
-            
-        # put policy weights in the object store
-        ####################################################################
-        # **************************************************************** #
-        # policy_id = ray.put(self.w_policy)
-        ####################################################################
 
         t1 = time.time()
         num_rollouts = int(num_deltas / self.num_workers)
             
         # parallel generation of rollouts
-        ####################################################################
-
-        # rollout_ids = [worker.do_rollouts(
-        #     np.copy(self.w_policy),
-        #     num_rollouts=num_rollouts,
-        #     shift=self.shift,
-        #     evaluate=evaluate) for worker in self.workers]
-
-        # print('num_deltas {} self.num_workers: {} num_rollouts {}'.format(num_deltas, self.num_workers, num_rollouts))
-
-        rollout_ids_one = [worker.do_rollouts(np.copy(self.w_policy),
+        results_one = [worker.do_rollouts(np.copy(self.w_policy),
                                                  num_rollouts = num_rollouts,
                                                  shift = self.shift,
                                                  evaluate=evaluate) for worker in self.workers]
 
-        rollout_ids_two = [worker.do_rollouts(np.copy(self.w_policy),
+        results_two = [worker.do_rollouts(np.copy(self.w_policy),
                                                  num_rollouts = 1,
                                                  shift = self.shift,
                                                  evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
 
 
-
-
-
-        results_one = rollout_ids_one
-        results_two = rollout_ids_two
-
-
-        # results_one = []
-        # for worker in self.workers:
-        #     worker_result = worker.do_rollouts(np.copy(self.w_policy),
-        #                                          num_rollouts = num_rollouts,
-        #                                          shift = self.shift,
-        #                                          evaluate=evaluate)
-        #     print(worker_result)
-        #     results_one.append(worker_result)
-
-        # print('results_one')
-        # print(results_one)
-
-
-        # results_two = []
-        # for worker in self.workers:
-        #     worker_result = worker.do_rollouts(np.copy(self.w_policy),
-        #                                          num_rollouts = 1,
-        #                                          shift = self.shift,
-        #                                          evaluate=evaluate)
-        #     print(worker_result)
-        #     results_two.append(worker_result)
-
-
-
-
-
-
-
-
-
-        # print('results_two')
-        # print(results_two)
-
-        # stack pointer: figure out why the rollout_results are not getting populated.
-        # assert False
-
-        # **************************************************************** #
-        # rollout_ids_one = [worker.do_rollouts.remote(policy_id,
-        #                                          num_rollouts = num_rollouts,
-        #                                          shift = self.shift,
-        #                                          evaluate=evaluate) for worker in self.workers]
-
-        # rollout_ids_two = [worker.do_rollouts.remote(policy_id,
-        #                                          num_rollouts = 1,
-        #                                          shift = self.shift,
-        #                                          evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
-
-
-        # gather results 
-        # results_one = ray.get(rollout_ids_one)
-        # results_two = ray.get(rollout_ids_two)
-
-        ####################################################################
-
-
         rollout_rewards, deltas_idx = [], [] 
 
-        ####################################################################
-
-        # for result in results:
-        #     if not evaluate:
-        #         self.timesteps += result["steps"]
-        #     deltas_idx += result['deltas_idx']
-        #     rollout_rewards += result['rollout_rewards']
-        # **************************************************************** #
         for result in results_one:
             if not evaluate:
                 self.timesteps += result["steps"]
@@ -344,13 +241,9 @@ class ARSLearner(object):
                 self.timesteps += result["steps"]
             deltas_idx += result['deltas_idx']
             rollout_rewards += result['rollout_rewards']
-        ####################################################################
 
         deltas_idx = np.array(deltas_idx)
         rollout_rewards = np.array(rollout_rewards, dtype = np.float64)
-        
-        # print('deltas_idx', deltas_idx)
-        # print('rollout_rewards', rollout_rewards)
 
         print('Maximum reward of collected rollouts:', rollout_rewards.max())
         t2 = time.time()
@@ -425,38 +318,19 @@ class ARSLearner(object):
             t1 = time.time()
             # get statistics from all workers
             for j in range(self.num_workers):
-                ####################################################################
                 self.policy.observation_filter.update(self.workers[j].get_filter())
-                # **************************************************************** #
-                # self.policy.observation_filter.update(ray.get(self.workers[j].get_filter.remote()))
-                ####################################################################
             self.policy.observation_filter.stats_increment()
 
             # make sure master filter buffer is clear
             self.policy.observation_filter.clear_buffer()
             # sync all workers
-            ####################################################################
             for worker in self.workers:
                 worker.sync_filter(self.policy.observation_filter)
-
-            # **************************************************************** #
-            # filter_id = ray.put(self.policy.observation_filter)
-            # setting_filters_ids = [worker.sync_filter.remote(filter_id) for worker in self.workers]
-            # waiting for sync of all workers
-            # ray.get(setting_filters_ids)
-            ####################################################################
-         
-            ####################################################################
             for worker in self.workers:
                 worker.stats_increment()
-            # **************************************************************** #
-            # increment_filters_ids = [worker.stats_increment.remote() for worker in self.workers]
-            # # waiting for increment of all workers
-            # ray.get(increment_filters_ids)            
-            ####################################################################
+
             t2 = time.time()
             print('Time to sync statistics:', t2 - t1)
-            # assert False
                         
         return 
 
