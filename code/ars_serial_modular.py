@@ -11,11 +11,9 @@ import os
 import numpy as np
 import gym
 import logz
-# import ray
 import utils
 import optimizers
 from policies import *
-# import socket
 from shared_noise import *
 
 class Worker(object):
@@ -141,15 +139,14 @@ class Worker(object):
 
 
 class ARS_Sampler(object):
-    def __init__(self, num_deltas, num_workers, shift, workers):
+    def __init__(self, num_deltas, shift, workers):
         self.num_deltas = num_deltas
-        self.num_workers = num_workers
+        self.num_workers = len(workers)
         self.shift = shift
-
         self.workers = workers
+        self.timesteps = 0
 
-    def gather_experience(self, num_rollouts, evaluate,
-        w_policy):
+    def gather_experience(self, num_rollouts, evaluate, w_policy):
         if num_rollouts is None:
             num_deltas = self.num_deltas
         else:
@@ -169,19 +166,18 @@ class ARS_Sampler(object):
                                                  evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
         return results_one + results_two
 
-    def consolidate_experience(self, results, evaluate,
-        timesteps):
+    def consolidate_experience(self, results, evaluate):
         rollout_rewards, deltas_idx = [], [] 
 
         for result in results:
             if not evaluate:
-                timesteps += result["steps"]
+                self.timesteps += result["steps"]
             deltas_idx += result['deltas_idx']
             rollout_rewards += result['rollout_rewards']
 
         deltas_idx = np.array(deltas_idx)
         rollout_rewards = np.array(rollout_rewards, dtype = np.float64)
-        return deltas_idx, rollout_rewards, timesteps
+        return deltas_idx, rollout_rewards
 
 
 class ARS_RL_Alg(object):
@@ -190,7 +186,6 @@ class ARS_RL_Alg(object):
         self.deltas = deltas
         self.num_deltas = num_deltas
         self.deltas_used = deltas_used
-
 
     def compute_error(self, deltas_idx, rollout_rewards, w_policy):
         # select top performing directions if deltas_used < num_deltas
@@ -214,16 +209,63 @@ class ARS_RL_Alg(object):
         g_hat /= deltas_idx.size
         return g_hat
 
-    def update(self, deltas_idx, rollout_rewards, w_policy):
+    def update(self, agent, deltas_idx, rollout_rewards):
         t1 = time.time()
-        g_hat = self.compute_error(deltas_idx, rollout_rewards, w_policy)
+        g_hat = self.compute_error(deltas_idx, rollout_rewards, agent.w_policy)
         print("\tEuclidean norm of update step:", np.linalg.norm(g_hat))
 
-        w_policy -= self.optimizer._compute_step(g_hat).reshape(w_policy.shape)
+        agent.w_policy -= self.optimizer._compute_step(g_hat).reshape(agent.w_policy.shape)
 
         t2 = time.time()
         print('\t\tTime to update weights', t2-t1)
-        return w_policy
+
+
+class ARS_Agent(object):
+    def __init__(self, num_workers, seed, env_name, policy_params, deltas_id, rollout_length, delta_std, step_size):
+        self.step_size = step_size
+
+        # initialize workers with different random seeds
+        print('Initializing workers.') 
+        self.num_workers = num_workers
+        self.workers = [Worker(seed + 7 * i,
+                                      env_name=env_name,
+                                      policy_params=policy_params,
+                                      deltas=deltas_id,
+                                      rollout_length=rollout_length,
+                                      delta_std=delta_std) for i in range(num_workers)]
+
+        # initialize policy 
+        if policy_params['type'] == 'linear':
+            self.policy = LinearPolicy(policy_params)
+            self.w_policy = self.policy.get_weights()
+        else:
+            raise NotImplementedError
+            
+        # initialize optimization algorithm
+        self.optimizer = optimizers.SGD(self.w_policy, self.step_size)        
+        print("Initialization of ARS complete.")
+
+    def sync_statistics(self):
+        t1 = time.time()
+        # get statistics from all workers
+        for j in range(self.num_workers):
+            self.policy.observation_filter.update(self.workers[j].get_filter())
+        self.policy.observation_filter.stats_increment()
+
+        # make sure master filter buffer is clear
+        self.policy.observation_filter.clear_buffer()
+        # sync all workers
+        for worker in self.workers:
+            worker.sync_filter(self.policy.observation_filter)
+        for worker in self.workers:
+            worker.stats_increment()
+
+        t2 = time.time()
+        print('\tTime to sync statistics:', t2 - t1)
+
+    def get_state(self):
+        w = self.policy.get_weights_plus_stats()
+        return w
 
 
 class ARSExperiment(object):
@@ -249,7 +291,6 @@ class ARSExperiment(object):
         
         env = gym.make(env_name)
         
-        self.timesteps = 0
         self.action_size = env.action_space.shape[0]
         self.ob_size = env.observation_space.shape[0]
         self.num_deltas = num_deltas
@@ -269,36 +310,17 @@ class ARSExperiment(object):
         self.deltas = SharedNoiseTable(deltas_id, seed = seed + 3)
         print('Created deltas table.')
 
-        # initialize workers with different random seeds
-        print('Initializing workers.') 
-        self.num_workers = num_workers
-        self.workers = [Worker(seed + 7 * i,
-                                      env_name=env_name,
-                                      policy_params=policy_params,
-                                      deltas=deltas_id,
-                                      rollout_length=rollout_length,
-                                      delta_std=delta_std) for i in range(num_workers)]
-
-        # initialize policy 
-        if policy_params['type'] == 'linear':
-            self.policy = LinearPolicy(policy_params)
-            self.w_policy = self.policy.get_weights()
-        else:
-            raise NotImplementedError
-            
-        # initialize optimization algorithm
-        self.optimizer = optimizers.SGD(self.w_policy, self.step_size)        
-        print("Initialization of ARS complete.")
-
         ########################################################
+
+        self.agent = ARS_Agent(num_workers, seed, env_name, policy_params, deltas_id, rollout_length, delta_std, step_size)
+
         self.sampler = ARS_Sampler(
             num_deltas=self.num_deltas, 
-            num_workers=self.num_workers,
             shift=self.shift,
-            workers=self.workers)
+            workers=self.agent.workers)
 
         self.rl_alg = ARS_RL_Alg(
-            optimizer=self.optimizer,
+            optimizer=self.agent.optimizer,
             deltas=self.deltas,
             num_deltas=self.num_deltas,
             deltas_used=self.deltas_used)
@@ -310,10 +332,8 @@ class ARSExperiment(object):
         """
         t1 = time.time()
 
-        results = self.sampler.gather_experience(
-            num_rollouts, evaluate, self.w_policy)
-        deltas_idx, rollout_rewards, self.timesteps = self.sampler.consolidate_experience(
-            results, evaluate, self.timesteps)
+        results = self.sampler.gather_experience(num_rollouts, evaluate, self.agent.w_policy)
+        deltas_idx, rollout_rewards = self.sampler.consolidate_experience(results, evaluate)
 
         print('\tMaximum reward of collected rollouts:', rollout_rewards.max())
         t2 = time.time()
@@ -330,35 +350,30 @@ class ARSExperiment(object):
         Perform one update step of the policy weights.
         """
         deltas_idx, rollout_rewards = self.aggregate_rollouts()
-        self.w_policy = self.rl_alg.update(deltas_idx, rollout_rewards, self.w_policy)
+        self.rl_alg.update(self.agent, deltas_idx, rollout_rewards)
+        self.agent.sync_statistics()
         return
 
     def main_loop(self, num_iter):
-
         start = time.time()
         for i in range(num_iter):
-            print('iter ', i,' start')
-            
+            print('iter ', i)  
+
+            # record statistics every 10 iterations
+            if (i % 2 == 0):
+                self.eval_step(start, i)
+                if self.params['debug'] and i == 4:
+                    return  # for debugging
+
             t1 = time.time()
             self.train_step()
             t2 = time.time()
             print('\tTotal time of one step', t2 - t1)           
-            
-            # record statistics every 10 iterations
-            if ((i + 1) % 10 == 0):
-                self.record_statistics(start, i)
-                if self.params['debug']:
-                    return  # for debugging
-
-            self.sync_statistics()
-            print('iter ', i,' done')
-                        
         return 
 
-    def record_statistics(self, start, i):
+    def eval_step(self, start, i):
         rewards = self.aggregate_rollouts(num_rollouts = 100, evaluate = True)
-        w = self.workers[0].get_weights_plus_stats()
-        np.savez(self.logdir + "/lin_policy_plus", w)
+        np.savez(self.logdir + "/lin_policy_plus", self.agent.get_state())
         
         print(sorted(self.params.items()))
         logz.log_tabular("Time", time.time() - start)
@@ -367,26 +382,8 @@ class ARSExperiment(object):
         logz.log_tabular("StdRewards", np.std(rewards))
         logz.log_tabular("MaxRewardRollout", np.max(rewards))
         logz.log_tabular("MinRewardRollout", np.min(rewards))
-        logz.log_tabular("timesteps", self.timesteps)
+        logz.log_tabular("timesteps", self.sampler.timesteps)
         logz.dump_tabular()
-
-    def sync_statistics(self):
-        t1 = time.time()
-        # get statistics from all workers
-        for j in range(self.num_workers):
-            self.policy.observation_filter.update(self.workers[j].get_filter())
-        self.policy.observation_filter.stats_increment()
-
-        # make sure master filter buffer is clear
-        self.policy.observation_filter.clear_buffer()
-        # sync all workers
-        for worker in self.workers:
-            worker.sync_filter(self.policy.observation_filter)
-        for worker in self.workers:
-            worker.stats_increment()
-
-        t2 = time.time()
-        print('\tTime to sync statistics:', t2 - t1)
 
 def run_ars(params):
 
