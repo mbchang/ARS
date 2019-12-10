@@ -8,6 +8,8 @@ Benjamin Recht
 
 import numpy as np
 from filter import get_filter
+import optimizers
+
 
 class Policy(object):
 
@@ -37,7 +39,7 @@ class Policy(object):
     def copy(self):
         raise NotImplementedError
 
-class LinearPolicy(Policy):
+class LinearAgent(Policy):
     """
     Linear policy class that computes action as <w, ob>. 
     """
@@ -50,9 +52,34 @@ class LinearPolicy(Policy):
         ob = self.observation_filter(ob, update=self.update_filter)
         return np.dot(self.weights, ob)
 
-    def get_weights_plus_stats(self):
+    def get_state(self):
         
         mu, std = self.observation_filter.get_stats()
         aux = np.asarray([self.weights, mu, std])
         return aux
         
+
+class MasterLinearAgent(LinearAgent):
+    """
+    Linear policy class that computes action as <w, ob>. 
+    """
+
+    def __init__(self, policy_params, step_size=0.1):
+        LinearAgent.__init__(self, policy_params)
+
+        # Hmm. Maybe this shouldn't be here.
+        # initialize optimization algorithm
+        self.step_size = step_size
+        self.optimizer = optimizers.SGD(self.weights, self.step_size)        
+        print("Initialization of ARS complete.")
+
+    def copy(self):
+        return np.copy(self.weights)
+
+
+
+
+
+
+
+

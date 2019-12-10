@@ -16,9 +16,18 @@ import optimizers
 from policies import *
 from shared_noise import *
 
+from rl_alg import ARS as ARS_RL_Alg
+
 class Worker(object):
     """ 
     Object class for parallel rollout generation.
+
+    Each worker gets
+        - env seed
+        - copy of the environment
+        - noise
+        - policy_config
+        - rollout_length
     """
 
     def __init__(self, env_seed,
@@ -36,23 +45,20 @@ class Worker(object):
         # with independent random streams for sampling
         # from the shared noise table. 
         self.deltas = SharedNoiseTable(deltas, env_seed + 7)
+
+        ################################################
         self.policy_params = policy_params
         if policy_params['type'] == 'linear':
-            self.policy = LinearPolicy(policy_params)
+            self.policy = LinearAgent(policy_params)
         else:
             raise NotImplementedError
+        # ---
+        # this should be replaced by an agent builder
+        # or you could literally just pass in a clone.
+        ################################################
             
         self.delta_std = delta_std
         self.rollout_length = rollout_length
-
-        
-    def get_weights_plus_stats(self):
-        """ 
-        Get current policy weights and current statistics of past states.
-        """
-        assert self.policy_params['type'] == 'linear'
-        return self.policy.get_weights_plus_stats()
-    
 
     def rollout(self, shift = 0., rollout_length = None):
         """ 
@@ -77,6 +83,36 @@ class Worker(object):
             
         return total_reward, steps
 
+    def evaluate_rollout(self, w_policy):
+        self.policy.update_weights(w_policy)
+        
+        # set to false so that evaluation rollouts are not used for updating state statistics
+        self.policy.update_filter = False
+
+        # for evaluation we do not shift the rewards (shift = 0) and we use the
+        # default rollout length (1000 for the MuJoCo locomotion tasks)
+        reward, r_steps = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
+        return reward, -1
+
+    def train_rollout(self, w_policy, shift):
+        idx, delta = self.deltas.get_delta(w_policy.size)
+     
+        delta = (self.delta_std * delta).reshape(w_policy.shape)
+
+        # set to true so that state statistics are updated 
+        self.policy.update_filter = True
+
+        # compute reward and number of timesteps used for positive perturbation rollout
+        self.policy.update_weights(w_policy + delta) 
+        pos_reward, pos_steps  = self.rollout(shift = shift)
+
+        # compute reward and number of timesteps used for negative pertubation rollout
+        self.policy.update_weights(w_policy - delta)
+        neg_reward, neg_steps = self.rollout(shift = shift) 
+
+        return [pos_reward, neg_reward], idx, pos_steps + neg_steps
+
+
     def do_rollouts(self, w_policy, num_rollouts = 1, shift = 1, evaluate = False):
         """ 
         Generate multiple rollouts with a policy parametrized by w_policy.
@@ -88,39 +124,17 @@ class Worker(object):
         for i in range(num_rollouts):
 
             if evaluate:
-                self.policy.update_weights(w_policy)
-                deltas_idx.append(-1)
-                
-                # set to false so that evaluation rollouts are not used for updating state statistics
-                self.policy.update_filter = False
-
-                # for evaluation we do not shift the rewards (shift = 0) and we use the
-                # default rollout length (1000 for the MuJoCo locomotion tasks)
-                reward, r_steps = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
-                rollout_rewards.append(reward)
-                
+                rollout_reward, rollout_idx = self.evaluate_rollout(w_policy)
             else:
-                idx, delta = self.deltas.get_delta(w_policy.size)
-             
-                delta = (self.delta_std * delta).reshape(w_policy.shape)
-                deltas_idx.append(idx)
+                rollout_reward, rollout_idx, rollout_steps = self.train_rollout(w_policy, shift)
+                steps += rollout_steps
 
-                # set to true so that state statistics are updated 
-                self.policy.update_filter = True
+            rollout_rewards.append(rollout_reward)
+            deltas_idx.append(rollout_idx)
 
-                # compute reward and number of timesteps used for positive perturbation rollout
-                self.policy.update_weights(w_policy + delta)
-                pos_reward, pos_steps  = self.rollout(shift = shift)
-
-                # compute reward and number of timesteps used for negative pertubation rollout
-                self.policy.update_weights(w_policy - delta)
-                neg_reward, neg_steps = self.rollout(shift = shift) 
-                steps += pos_steps + neg_steps
-
-                rollout_rewards.append([pos_reward, neg_reward])
-                            
         return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps" : steps}
     
+
     def stats_increment(self):
         self.policy.observation_filter.stats_increment()
         return
@@ -135,18 +149,34 @@ class Worker(object):
         self.policy.observation_filter.sync(other)
         return
 
-    
 
 
 class ARS_Sampler(object):
-    def __init__(self, num_deltas, shift, workers):
+    def __init__(self, num_deltas, shift,
+        seed, 
+        env_name,
+        policy_params,  # can look at this
+        deltas_id,
+        rollout_length,
+        delta_std,
+        num_workers):
+
         self.num_deltas = num_deltas
-        self.num_workers = len(workers)
         self.shift = shift
-        self.workers = workers
+
+        # initialize workers with different random seeds
+        print('Initializing workers.') 
+        self.num_workers = num_workers
+        self.workers = [Worker(seed + 7 * i,
+                                      env_name=env_name,
+                                      policy_params=policy_params,
+                                      deltas=deltas_id,
+                                      rollout_length=rollout_length,
+                                      delta_std=delta_std) for i in range(num_workers)]
+
         self.timesteps = 0
 
-    def gather_experience(self, num_rollouts, evaluate, w_policy):
+    def gather_experience(self, num_rollouts, evaluate, agent):
         if num_rollouts is None:
             num_deltas = self.num_deltas
         else:
@@ -155,12 +185,12 @@ class ARS_Sampler(object):
         num_rollouts = int(num_deltas / self.num_workers)
 
         # parallel generation of rollouts
-        results_one = [worker.do_rollouts(np.copy(w_policy),
+        results_one = [worker.do_rollouts(agent.copy(),
                                                  num_rollouts = num_rollouts,
                                                  shift = self.shift,
                                                  evaluate=evaluate) for worker in self.workers]
 
-        results_two = [worker.do_rollouts(np.copy(w_policy),
+        results_two = [worker.do_rollouts(agent.copy(),
                                                  num_rollouts = 1,
                                                  shift = self.shift,
                                                  evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
@@ -180,92 +210,39 @@ class ARS_Sampler(object):
         return deltas_idx, rollout_rewards
 
 
-class ARS_RL_Alg(object):
-    def __init__(self, optimizer, deltas, num_deltas, deltas_used):
-        self.optimizer = optimizer
-        self.deltas = deltas
-        self.num_deltas = num_deltas
-        self.deltas_used = deltas_used
-
-    def compute_error(self, deltas_idx, rollout_rewards, w_policy):
-        # select top performing directions if deltas_used < num_deltas
-        max_rewards = np.max(rollout_rewards, axis = 1)
-        if self.deltas_used > self.num_deltas:
-            self.deltas_used = self.num_deltas
-            
-        idx = np.arange(max_rewards.size)[max_rewards >= np.percentile(max_rewards, 100*(1 - (self.deltas_used / self.num_deltas)))]
-        deltas_idx = deltas_idx[idx]
-        rollout_rewards = rollout_rewards[idx,:]
-        
-        # normalize rewards by their standard deviation
-        rollout_rewards /= np.std(rollout_rewards)
-
-        t1 = time.time()
-        # aggregate rollouts to form g_hat, the gradient used to compute SGD step
-        g_hat, count = utils.batched_weighted_sum(rollout_rewards[:,0] - rollout_rewards[:,1],
-                                                  (self.deltas.get(idx, w_policy.size)
-                                                   for idx in deltas_idx),
-                                                  batch_size = 500)
-        g_hat /= deltas_idx.size
-        return g_hat
-
-    def update(self, agent, deltas_idx, rollout_rewards):
-        t1 = time.time()
-        g_hat = self.compute_error(deltas_idx, rollout_rewards, agent.w_policy)
-        print("\tEuclidean norm of update step:", np.linalg.norm(g_hat))
-
-        agent.w_policy -= self.optimizer._compute_step(g_hat).reshape(agent.w_policy.shape)
-
-        t2 = time.time()
-        print('\t\tTime to update weights', t2-t1)
-
-
-class ARS_Agent(object):
-    def __init__(self, num_workers, seed, env_name, policy_params, deltas_id, rollout_length, delta_std, step_size):
-        self.step_size = step_size
-
-        # initialize workers with different random seeds
-        print('Initializing workers.') 
-        self.num_workers = num_workers
-        self.workers = [Worker(seed + 7 * i,
-                                      env_name=env_name,
-                                      policy_params=policy_params,
-                                      deltas=deltas_id,
-                                      rollout_length=rollout_length,
-                                      delta_std=delta_std) for i in range(num_workers)]
-
-        # initialize policy 
-        if policy_params['type'] == 'linear':
-            self.policy = LinearPolicy(policy_params)
-            self.w_policy = self.policy.get_weights()
-        else:
-            raise NotImplementedError
-            
-        # initialize optimization algorithm
-        self.optimizer = optimizers.SGD(self.w_policy, self.step_size)        
-        print("Initialization of ARS complete.")
-
-    def sync_statistics(self):
+    def sync_statistics(self, agent):
         t1 = time.time()
         # get statistics from all workers
         for j in range(self.num_workers):
-            self.policy.observation_filter.update(self.workers[j].get_filter())
-        self.policy.observation_filter.stats_increment()
+            agent.observation_filter.update(self.workers[j].get_filter())
+        agent.observation_filter.stats_increment()
 
         # make sure master filter buffer is clear
-        self.policy.observation_filter.clear_buffer()
+        agent.observation_filter.clear_buffer()
         # sync all workers
         for worker in self.workers:
-            worker.sync_filter(self.policy.observation_filter)
+            worker.sync_filter(agent.observation_filter)
         for worker in self.workers:
             worker.stats_increment()
 
         t2 = time.time()
         print('\tTime to sync statistics:', t2 - t1)
 
-    def get_state(self):
-        w = self.policy.get_weights_plus_stats()
-        return w
+
+"""
+Your worker will be a copy of the organism, whether the organism is a society or agent.
+This means that the worker should not know about the policy.
+You need methods to clone the agent and update the agent.
+    - let's implement that now.
+    - the agent needs a method to copy itself
+    - the agent needs a method to update weights
+    - the agent needs a method to get weights
+
+Ok, let's combine ARS_Agent with Policy.
+Let's just make everything interface with Agent now.
+
+"""
+
 
 
 class ARSExperiment(object):
@@ -312,18 +289,34 @@ class ARSExperiment(object):
 
         ########################################################
 
-        self.agent = ARS_Agent(num_workers, seed, env_name, policy_params, deltas_id, rollout_length, delta_std, step_size)
+        self.agent = MasterLinearAgent(
+            policy_params=policy_params, 
+            step_size=step_size)
 
         self.sampler = ARS_Sampler(
             num_deltas=self.num_deltas, 
             shift=self.shift,
-            workers=self.agent.workers)
+            num_workers=num_workers,
+            seed=seed, 
+            env_name=env_name, 
+            policy_params=policy_params, 
+            deltas_id=deltas_id, 
+            rollout_length=rollout_length, 
+            delta_std=delta_std, 
+
+            )  # maybe we'd need to merge Sampler and Agent
+        # agent holds the parameters, but sampler takes the agent and does the parallel rollouts
+        # so agent should not have the workers at all...
+        # agent should just contain the parameter.
+        # but the sampler would need to take the agent in.
+        # so the sampler is the thing that takes a single agent, and creates a bunch of workers
+        # modeled the agent.
 
         self.rl_alg = ARS_RL_Alg(
-            optimizer=self.agent.optimizer,
-            deltas=self.deltas,
-            num_deltas=self.num_deltas,
-            deltas_used=self.deltas_used)
+            deltas=self.deltas,  # noise table
+            num_deltas=self.num_deltas,  # N
+            deltas_used=self.deltas_used  # b
+            )
         ########################################################
 
     def aggregate_rollouts(self, num_rollouts = None, evaluate = False):
@@ -332,7 +325,7 @@ class ARSExperiment(object):
         """
         t1 = time.time()
 
-        results = self.sampler.gather_experience(num_rollouts, evaluate, self.agent.w_policy)
+        results = self.sampler.gather_experience(num_rollouts, evaluate, self.agent)
         deltas_idx, rollout_rewards = self.sampler.consolidate_experience(results, evaluate)
 
         print('\tMaximum reward of collected rollouts:', rollout_rewards.max())
@@ -350,8 +343,9 @@ class ARSExperiment(object):
         Perform one update step of the policy weights.
         """
         deltas_idx, rollout_rewards = self.aggregate_rollouts()
-        self.rl_alg.update(self.agent, deltas_idx, rollout_rewards)
-        self.agent.sync_statistics()
+        # actually this interface seems to make sense.
+        self.rl_alg.improve(self.agent, deltas_idx, rollout_rewards)
+        self.sampler.sync_statistics(self.agent)
         return
 
     def main_loop(self, num_iter):
@@ -447,9 +441,6 @@ if __name__ == '__main__':
     # for ARS V1 use filter = 'NoFilter'
     parser.add_argument('--filter', type=str, default='MeanStdFilter')
 
-    # local_ip = socket.gethostbyname(socket.gethostname())
-    # ray.init(redis_address= local_ip + ':6379')
-    
     args = parser.parse_args()
     params = vars(args)
     run_ars(params)
