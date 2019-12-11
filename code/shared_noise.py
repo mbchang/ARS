@@ -41,5 +41,5 @@ class SharedNoiseTable(object):
         return self.rg.randint(0, len(self.noise) - dim + 1)
 
     def get_delta(self, dim):
-        idx = self.sample_index(dim)
-        return idx, self.get(idx, dim)
+        idx = self.sample_index(dim)  # get starting index of noise block
+        return idx, self.get(idx, dim)  # return idx and noise block

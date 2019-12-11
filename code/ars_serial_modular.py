@@ -32,7 +32,7 @@ class Worker(object):
 
     def __init__(self, env_seed,
                  env_name='',
-                 policy_params = None,
+                 agent_params = None,
                  deltas=None,
                  rollout_length=1000,
                  delta_std=0.02):
@@ -47,9 +47,8 @@ class Worker(object):
         self.deltas = SharedNoiseTable(deltas, env_seed + 7)
 
         ################################################
-        self.policy_params = policy_params
-        if policy_params['type'] == 'linear':
-            self.policy = LinearAgent(policy_params)
+        if agent_params['type'] == 'linear':
+            self.worker_agent = LinearAgent(agent_params)
         else:
             raise NotImplementedError
         # ---
@@ -74,7 +73,7 @@ class Worker(object):
 
         ob = self.env.reset()
         for i in range(rollout_length):
-            action = self.policy.act(ob)
+            action = self.worker_agent.forward(ob)
             ob, reward, done, _ = self.env.step(action)
             steps += 1
             total_reward += (reward - shift)
@@ -83,37 +82,38 @@ class Worker(object):
             
         return total_reward, steps
 
-    def evaluate_rollout(self, w_policy):
-        self.policy.update_weights(w_policy)
+    def evaluate_rollout(self, master_agent):
+        self.worker_agent.sync_weights(master_agent)
         
         # set to false so that evaluation rollouts are not used for updating state statistics
-        self.policy.update_filter = False
+        self.worker_agent.evaluate_mode()
 
         # for evaluation we do not shift the rewards (shift = 0) and we use the
         # default rollout length (1000 for the MuJoCo locomotion tasks)
         reward, r_steps = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
         return reward, -1
 
-    def train_rollout(self, w_policy, shift):
-        idx, delta = self.deltas.get_delta(w_policy.size)
-     
-        delta = (self.delta_std * delta).reshape(w_policy.shape)
+    def train_rollout(self, master_agent, shift):
+        idx, delta = self.deltas.get_delta(self.worker_agent.get_num_weights())
+        delta = self.delta_std * delta  # *= doesn't work!
 
         # set to true so that state statistics are updated 
-        self.policy.update_filter = True
+        self.worker_agent.train_mode()
 
         # compute reward and number of timesteps used for positive perturbation rollout
-        self.policy.update_weights(w_policy + delta) 
+        self.worker_agent.sync_weights(master_agent)
+        self.worker_agent.add_noise_to_weights(delta)
         pos_reward, pos_steps  = self.rollout(shift = shift)
 
         # compute reward and number of timesteps used for negative pertubation rollout
-        self.policy.update_weights(w_policy - delta)
+        self.worker_agent.sync_weights(master_agent)
+        self.worker_agent.add_noise_to_weights(-delta)
         neg_reward, neg_steps = self.rollout(shift = shift) 
 
         return [pos_reward, neg_reward], idx, pos_steps + neg_steps
 
 
-    def do_rollouts(self, w_policy, num_rollouts = 1, shift = 1, evaluate = False):
+    def do_rollouts(self, master_agent, num_rollouts = 1, shift = 1, evaluate = False):
         """ 
         Generate multiple rollouts with a policy parametrized by w_policy.
         """
@@ -124,9 +124,9 @@ class Worker(object):
         for i in range(num_rollouts):
 
             if evaluate:
-                rollout_reward, rollout_idx = self.evaluate_rollout(w_policy)
+                rollout_reward, rollout_idx = self.evaluate_rollout(master_agent)
             else:
-                rollout_reward, rollout_idx, rollout_steps = self.train_rollout(w_policy, shift)
+                rollout_reward, rollout_idx, rollout_steps = self.train_rollout(master_agent, shift)
                 steps += rollout_steps
 
             rollout_rewards.append(rollout_reward)
@@ -135,27 +135,11 @@ class Worker(object):
         return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps" : steps}
     
 
-    def stats_increment(self):
-        self.policy.observation_filter.stats_increment()
-        return
-
-    def get_weights(self):
-        return self.policy.get_weights()
-    
-    def get_filter(self):
-        return self.policy.observation_filter
-
-    def sync_filter(self, other):
-        self.policy.observation_filter.sync(other)
-        return
-
-
-
 class ARS_Sampler(object):
     def __init__(self, num_deltas, shift,
         seed, 
         env_name,
-        policy_params,  # can look at this
+        agent_params,  # can look at this
         deltas_id,
         rollout_length,
         delta_std,
@@ -169,14 +153,14 @@ class ARS_Sampler(object):
         self.num_workers = num_workers
         self.workers = [Worker(seed + 7 * i,
                                       env_name=env_name,
-                                      policy_params=policy_params,
+                                      agent_params=agent_params,
                                       deltas=deltas_id,
                                       rollout_length=rollout_length,
                                       delta_std=delta_std) for i in range(num_workers)]
 
         self.timesteps = 0
 
-    def gather_experience(self, num_rollouts, evaluate, agent):
+    def gather_experience(self, num_rollouts, evaluate, master_agent):
         if num_rollouts is None:
             num_deltas = self.num_deltas
         else:
@@ -185,15 +169,15 @@ class ARS_Sampler(object):
         num_rollouts = int(num_deltas / self.num_workers)
 
         # parallel generation of rollouts
-        results_one = [worker.do_rollouts(agent.copy(),
-                                                 num_rollouts = num_rollouts,
-                                                 shift = self.shift,
-                                                 evaluate=evaluate) for worker in self.workers]
+        results_one = [worker.do_rollouts(master_agent,
+                                             num_rollouts = num_rollouts,
+                                             shift = self.shift,
+                                             evaluate=evaluate) for worker in self.workers]
 
-        results_two = [worker.do_rollouts(agent.copy(),
-                                                 num_rollouts = 1,
-                                                 shift = self.shift,
-                                                 evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
+        results_two = [worker.do_rollouts(master_agent,
+                                             num_rollouts = 1,
+                                             shift = self.shift,
+                                             evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
         return results_one + results_two
 
     def consolidate_experience(self, results, evaluate):
@@ -209,22 +193,26 @@ class ARS_Sampler(object):
         rollout_rewards = np.array(rollout_rewards, dtype = np.float64)
         return deltas_idx, rollout_rewards
 
+    def update_master_from_workers(self, master_agent, workers):
+        for worker in workers:
+            master_agent.update_filter(worker.worker_agent)
+        master_agent.stats_increment()
 
-    def sync_statistics(self, agent):
-        t1 = time.time()
-        # get statistics from all workers
-        for j in range(self.num_workers):
-            agent.observation_filter.update(self.workers[j].get_filter())
-        agent.observation_filter.stats_increment()
-
-        # make sure master filter buffer is clear
-        agent.observation_filter.clear_buffer()
+    def sync_workers_to_master(self, master_agent, workers):
+        master_agent.clear_filter_buffer()
         # sync all workers
-        for worker in self.workers:
-            worker.sync_filter(agent.observation_filter)
-        for worker in self.workers:
-            worker.stats_increment()
+        for worker in workers:
+            worker.worker_agent.sync_filter(master_agent)
+        for worker in workers:
+            worker.worker_agent.stats_increment()
 
+    # note that this is all about syncing and updating the filter
+    def sync_statistics(self, master_agent):
+        t1 = time.time()
+        # 1. sync master agent to workers
+        self.update_master_from_workers(master_agent, self.workers)
+        # 2. broadcast master agent to workers
+        self.sync_workers_to_master(master_agent, self.workers)
         t2 = time.time()
         print('\tTime to sync statistics:', t2 - t1)
 
@@ -251,7 +239,7 @@ class ARSExperiment(object):
     """
 
     def __init__(self, env_name='HalfCheetah-v1',
-                 policy_params=None,
+                 agent_params=None,
                  num_workers=32, 
                  num_deltas=320,  # N
                  deltas_used=320,  # b
@@ -289,8 +277,8 @@ class ARSExperiment(object):
 
         ########################################################
 
-        self.agent = MasterLinearAgent(
-            policy_params=policy_params, 
+        self.master_agent = MasterLinearAgent(
+            agent_params=agent_params, 
             step_size=step_size)
 
         self.sampler = ARS_Sampler(
@@ -299,7 +287,7 @@ class ARSExperiment(object):
             num_workers=num_workers,
             seed=seed, 
             env_name=env_name, 
-            policy_params=policy_params, 
+            agent_params=agent_params, 
             deltas_id=deltas_id, 
             rollout_length=rollout_length, 
             delta_std=delta_std, 
@@ -325,7 +313,7 @@ class ARSExperiment(object):
         """
         t1 = time.time()
 
-        results = self.sampler.gather_experience(num_rollouts, evaluate, self.agent)
+        results = self.sampler.gather_experience(num_rollouts, evaluate, self.master_agent)
         deltas_idx, rollout_rewards = self.sampler.consolidate_experience(results, evaluate)
 
         print('\tMaximum reward of collected rollouts:', rollout_rewards.max())
@@ -344,8 +332,8 @@ class ARSExperiment(object):
         """
         deltas_idx, rollout_rewards = self.aggregate_rollouts()
         # actually this interface seems to make sense.
-        self.rl_alg.improve(self.agent, deltas_idx, rollout_rewards)
-        self.sampler.sync_statistics(self.agent)
+        self.rl_alg.improve(self.master_agent, deltas_idx, rollout_rewards)
+        self.sampler.sync_statistics(self.master_agent)
         return
 
     def main_loop(self, num_iter):
@@ -367,7 +355,7 @@ class ARSExperiment(object):
 
     def eval_step(self, start, i):
         rewards = self.aggregate_rollouts(num_rollouts = 100, evaluate = True)
-        np.savez(self.logdir + "/lin_policy_plus", self.agent.get_state())
+        np.savez(self.logdir + "/lin_policy_plus", self.master_agent.get_state())
         
         print(sorted(self.params.items()))
         logz.log_tabular("Time", time.time() - start)
@@ -394,13 +382,13 @@ def run_ars(params):
     ac_dim = env.action_space.shape[0]
 
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
-    policy_params={'type':'linear',
+    agent_params={'type':'linear',
                    'ob_filter':params['filter'],
                    'ob_dim':ob_dim,
                    'ac_dim':ac_dim}
 
     ARS = ARSExperiment(env_name=params['env_name'],
-                     policy_params=policy_params,
+                     agent_params=agent_params,
                      num_workers=params['n_workers'], 
                      num_deltas=params['n_directions'],
                      deltas_used=params['deltas_used'],
