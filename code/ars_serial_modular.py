@@ -13,7 +13,7 @@ import gym
 import logz
 import utils
 import optimizers
-from policies import *
+from policies import ARS_LinearAgent, ARS_MasterLinearAgent
 from shared_noise import *
 
 from rl_alg import ARS as ARS_RL_Alg
@@ -48,7 +48,7 @@ class Worker(object):
 
         ################################################
         if agent_params['type'] == 'linear':
-            self.worker_agent = LinearAgent(agent_params)
+            self.worker_agent = ARS_LinearAgent(agent_params)
         else:
             raise NotImplementedError
         # ---
@@ -83,10 +83,10 @@ class Worker(object):
         return total_reward, steps
 
     def evaluate_rollout(self, master_agent):
-        self.worker_agent.sync_weights(master_agent)
-        
         # set to false so that evaluation rollouts are not used for updating state statistics
         self.worker_agent.evaluate_mode()
+
+        self.worker_agent.sync_weights(master_agent)
 
         # for evaluation we do not shift the rewards (shift = 0) and we use the
         # default rollout length (1000 for the MuJoCo locomotion tasks)
@@ -277,7 +277,7 @@ class ARSExperiment(object):
 
         ########################################################
 
-        self.master_agent = MasterLinearAgent(
+        self.master_agent = ARS_MasterLinearAgent(
             agent_params=agent_params, 
             step_size=step_size)
 
