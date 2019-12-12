@@ -11,13 +11,13 @@ from filter import get_filter
 import optimizers
 
 
-class ARS_Agent(object):
+class Base_ARS_Agent(object):
     """
     Linear policy class that computes action as <w, ob>. 
     """
 
     def __init__(self):
-        super(ARS_Agent, self).__init__()
+        super(Base_ARS_Agent, self).__init__()
         self.should_update_filter = True
 
     #########################################################
@@ -67,19 +67,43 @@ class ARS_Agent(object):
     #########################################################
 
 
-class ARS_LinearAgent(ARS_Agent):
+class ARS_MasterAgent(Base_ARS_Agent):
     """
     Linear policy class that computes action as <w, ob>. 
     """
 
-    def __init__(self, agent_params):
-        ARS_Agent.__init__(self)
-        self.ob_dim = agent_params['ob_dim']
-        self.ac_dim = agent_params['ac_dim']
+    def __init__(self, step_size=0.1):
+        Base_ARS_Agent.__init__(self)
+
+        # Hmm. Maybe this shouldn't be here.
+        # initialize optimization algorithm
+        self.optimizer = optimizers.SGD(self.weights, step_size)        
+        print("Initialization of ARS complete.")
+
+    #########################################################
+    # observation filter stuff
+    def update_filter(self, other):
+        self.observation_filter.update(other.get_filter())
+
+    def clear_filter_buffer(self):
+        self.observation_filter.clear_buffer()
+    #########################################################/.    
+
+
+class ARS_LinearAgent(Base_ARS_Agent):
+    """
+    Linear policy class that computes action as <w, ob>. 
+    """
+
+    def __init__(self, agent_args, id_num=0):
+        Base_ARS_Agent.__init__(self)
+        self.id = id_num
+        self.ob_dim = agent_args['ob_dim']
+        self.ac_dim = agent_args['ac_dim']
         self.weights = np.zeros((self.ac_dim, self.ob_dim), dtype = np.float64)
 
         # a filter for updating statistics of the observations and normalizing inputs to the policies
-        self.observation_filter = get_filter(agent_params['ob_filter'], shape = (self.ob_dim,))
+        self.observation_filter = get_filter(agent_args['ob_filter'], shape = (self.ob_dim,))
 
     def forward(self, ob):
         ob = self.observation_filter(ob, update=self.should_update_filter)
@@ -99,39 +123,18 @@ I think the interface should be:
 5. worker.policy.sync_weights(master_policy)
 6. worker.policy.add_noise_to_weights(-noise)
 7. worker.rollout()
-"""
-
-class ARS_MasterAgent(ARS_Agent):
-    """
-    Linear policy class that computes action as <w, ob>. 
-    """
-
-    def __init__(self, step_size=0.1):
-        ARS_Agent.__init__(self)
-
-        # Hmm. Maybe this shouldn't be here.
-        # initialize optimization algorithm
-        self.optimizer = optimizers.SGD(self.weights, step_size)        
-        print("Initialization of ARS complete.")
-
-    #########################################################
-    # observation filter stuff
-    def update_filter(self, other_agent):
-        self.observation_filter.update(other_agent.get_filter())
-
-    def clear_filter_buffer(self):
-        self.observation_filter.clear_buffer()
-    #########################################################/.                                                                                     /.
-
-
+"""                                                                     
 class ARS_MasterLinearAgent(ARS_LinearAgent, ARS_MasterAgent):
     """
     Linear policy class that computes action as <w, ob>. 
     """
 
-    def __init__(self, agent_params, step_size=0.1):
-        ARS_LinearAgent.__init__(self, agent_params)
+    def __init__(self, agent_args, step_size=0.1):
+        ARS_LinearAgent.__init__(self, agent_args)
         ARS_MasterAgent.__init__(self, step_size)
+
+    def update(self, rl_alg, deltas_idx, rollout_rewards):
+        rl_alg.improve(self, deltas_idx, rollout_rewards)
 
 
 """
