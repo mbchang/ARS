@@ -32,7 +32,7 @@ class Worker(object):
 
     def __init__(self, env_seed,
                  env_name='',
-                 agent_params = None,
+                 agent_args = None,
                  deltas=None,
                  rollout_length=1000,
                  delta_std=0.02):
@@ -47,8 +47,8 @@ class Worker(object):
         self.deltas = SharedNoiseTable(deltas, env_seed + 7)
 
         ################################################
-        if agent_params['type'] == 'linear':
-            self.worker_agent = ARS_LinearAgent(agent_params)
+        if agent_args['type'] == 'linear':
+            self.worker_agent = ARS_LinearAgent(agent_args)
         else:
             raise NotImplementedError
         # ---
@@ -139,7 +139,7 @@ class ARS_Sampler(object):
     def __init__(self, num_deltas, shift,
         seed, 
         env_name,
-        agent_params,  # can look at this
+        agent_args,  # can look at this
         deltas_id,
         rollout_length,
         delta_std,
@@ -153,7 +153,7 @@ class ARS_Sampler(object):
         self.num_workers = num_workers
         self.workers = [Worker(seed + 7 * i,
                                       env_name=env_name,
-                                      agent_params=agent_params,
+                                      agent_args=agent_args,
                                       deltas=deltas_id,
                                       rollout_length=rollout_length,
                                       delta_std=delta_std) for i in range(num_workers)]
@@ -239,7 +239,7 @@ class ARSExperiment(object):
     """
 
     def __init__(self, env_name='HalfCheetah-v1',
-                 agent_params=None,
+                 agent_args=None,
                  num_workers=32, 
                  num_deltas=320,  # N
                  deltas_used=320,  # b
@@ -278,7 +278,7 @@ class ARSExperiment(object):
         ########################################################
 
         self.master_agent = ARS_MasterLinearAgent(
-            agent_params=agent_params, 
+            agent_args=agent_args, 
             step_size=step_size)
 
         self.sampler = ARS_Sampler(
@@ -287,7 +287,7 @@ class ARSExperiment(object):
             num_workers=num_workers,
             seed=seed, 
             env_name=env_name, 
-            agent_params=agent_params, 
+            agent_args=agent_args, 
             deltas_id=deltas_id, 
             rollout_length=rollout_length, 
             delta_std=delta_std, 
@@ -332,7 +332,7 @@ class ARSExperiment(object):
         """
         deltas_idx, rollout_rewards = self.aggregate_rollouts()
         # actually this interface seems to make sense.
-        self.rl_alg.improve(self.master_agent, deltas_idx, rollout_rewards)
+        self.master_agent.update(self.rl_alg, deltas_idx, rollout_rewards)
         self.sampler.sync_statistics(self.master_agent)
         return
 
@@ -382,13 +382,13 @@ def run_ars(params):
     ac_dim = env.action_space.shape[0]
 
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
-    agent_params={'type':'linear',
+    agent_args={'type':'linear',
                    'ob_filter':params['filter'],
                    'ob_dim':ob_dim,
                    'ac_dim':ac_dim}
 
     ARS = ARSExperiment(env_name=params['env_name'],
-                     agent_params=agent_params,
+                     agent_args=agent_args,
                      num_workers=params['n_workers'], 
                      num_deltas=params['n_directions'],
                      deltas_used=params['deltas_used'],
