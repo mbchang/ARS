@@ -26,3 +26,24 @@ def batched_weighted_sum(weights, vecs, batch_size):
                         np.asarray(batch_vecs, dtype=np.float64))
         num_items_summed += len(batch_weights)
     return total, num_items_summed
+
+def tranpose_list_of_dicts(list_of_dicts):
+    """
+    input:
+        [
+            {key1: val1_0, key2: val2_0, ...},
+            {key1: val1_1, key2: val2_1, ...},
+        ]
+
+    output:
+        {
+            key1: [val1_0, val1_1, ...]
+            key2: [val2_0, val2_1, ...]
+        }
+    """
+    keys = list_of_dicts[0].keys()
+    output = {key: [] for key in keys}
+    for element_dict in list_of_dicts:
+        for key in element_dict:
+            output[key].append(element_dict[key])
+    return output

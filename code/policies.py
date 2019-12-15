@@ -97,7 +97,6 @@ class ARS_LinearAgent(Base_ARS_Agent):
 
     def __init__(self, agent_args, id_num=0):
         Base_ARS_Agent.__init__(self)
-        self.id = id_num
         self.ob_dim = agent_args['ob_dim']
         self.ac_dim = agent_args['ac_dim']
         self.weights = np.zeros((self.ac_dim, self.ob_dim), dtype = np.float64)
@@ -105,9 +104,19 @@ class ARS_LinearAgent(Base_ARS_Agent):
         # a filter for updating statistics of the observations and normalizing inputs to the policies
         self.observation_filter = get_filter(agent_args['ob_filter'], shape = (self.ob_dim,))
 
+        ####################################
+        # auction stuff
+        self.id = id_num
+        self.active = True
+        ####################################
+
+
     def forward(self, ob):
         ob = self.observation_filter(ob, update=self.should_update_filter)
-        return np.dot(self.weights, ob)
+        action = np.dot(self.weights, ob)
+        if len(action) == 1:
+            action = action[0]
+        return action
 
 """
 I think the interface should be:
@@ -129,8 +138,8 @@ class ARS_MasterLinearAgent(ARS_LinearAgent, ARS_MasterAgent):
     Linear policy class that computes action as <w, ob>. 
     """
 
-    def __init__(self, agent_args, step_size=0.1):
-        ARS_LinearAgent.__init__(self, agent_args)
+    def __init__(self, agent_args, id_num=0, step_size=0.1):
+        ARS_LinearAgent.__init__(self, agent_args, id_num)
         ARS_MasterAgent.__init__(self, step_size)
 
     def update(self, rl_alg, deltas_idx, rollout_rewards):

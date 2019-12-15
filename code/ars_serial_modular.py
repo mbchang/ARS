@@ -110,6 +110,9 @@ class Worker(object):
         self.worker_agent.add_noise_to_weights(-delta)
         neg_reward, neg_steps = self.rollout(shift = shift) 
 
+        # print(pos_reward, neg_reward)
+        # assert False
+
         return [pos_reward, neg_reward], idx, pos_steps + neg_steps
 
 
@@ -131,6 +134,8 @@ class Worker(object):
 
             rollout_rewards.append(rollout_reward)
             deltas_idx.append(rollout_idx)
+
+
 
         return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps" : steps}
     
@@ -168,6 +173,10 @@ class ARS_Sampler(object):
             
         num_rollouts = int(num_deltas / self.num_workers)
 
+        print(num_rollouts)
+        print(num_deltas)
+        print(self.num_workers)
+
         # parallel generation of rollouts
         results_one = [worker.do_rollouts(master_agent,
                                              num_rollouts = num_rollouts,
@@ -187,10 +196,16 @@ class ARS_Sampler(object):
             if not evaluate:
                 self.timesteps += result["steps"]
             deltas_idx += result['deltas_idx']
+
+            # print(result['rollout_rewards'])
+            # assert False
             rollout_rewards += result['rollout_rewards']
 
         deltas_idx = np.array(deltas_idx)
-        rollout_rewards = np.array(rollout_rewards, dtype = np.float64)
+        # print(rollout_rewards)
+        # assert False
+        rollout_rewards = np.array(rollout_rewards, dtype = np.float64)  # (100,) for eval; (8, 2) for train
+        print(rollout_rewards.shape)
         return deltas_idx, rollout_rewards
 
     def update_master_from_workers(self, master_agent, workers):
@@ -330,6 +345,7 @@ class ARSExperiment(object):
         """ 
         Perform one update step of the policy weights.
         """
+        print('la')
         deltas_idx, rollout_rewards = self.aggregate_rollouts()
         # actually this interface seems to make sense.
         self.master_agent.update(self.rl_alg, deltas_idx, rollout_rewards)
