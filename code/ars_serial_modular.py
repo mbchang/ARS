@@ -173,10 +173,6 @@ class ARS_Sampler(object):
             
         num_rollouts = int(num_deltas / self.num_workers)
 
-        print(num_rollouts)
-        print(num_deltas)
-        print(self.num_workers)
-
         # parallel generation of rollouts
         results_one = [worker.do_rollouts(master_agent,
                                              num_rollouts = num_rollouts,
@@ -196,16 +192,10 @@ class ARS_Sampler(object):
             if not evaluate:
                 self.timesteps += result["steps"]
             deltas_idx += result['deltas_idx']
-
-            # print(result['rollout_rewards'])
-            # assert False
             rollout_rewards += result['rollout_rewards']
 
         deltas_idx = np.array(deltas_idx)
-        # print(rollout_rewards)
-        # assert False
-        rollout_rewards = np.array(rollout_rewards, dtype = np.float64)  # (100,) for eval; (8, 2) for train
-        print(rollout_rewards.shape)
+        rollout_rewards = np.array(rollout_rewards, dtype = np.float64)  # (100,) for eval; (num_deltas, 2) for train
         return deltas_idx, rollout_rewards
 
     def update_master_from_workers(self, master_agent, workers):

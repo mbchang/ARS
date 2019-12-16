@@ -19,7 +19,24 @@ class ARS(RandomSearchRlAlg):
 
     def compute_error(self, deltas_idx, rollout_rewards, w_policy):
         # select top performing directions if deltas_used < num_deltas
+        # print(rollout_rewards)
+
+# [[-2.87434319e-01 -8.03944662e+01]
+#  [-2.74175199e-01  1.13521512e+00]
+#  [-1.23443744e+00  4.39024519e-02]
+#  [-1.63353930e-01  4.60910097e+01]
+#  [-1.43930355e+02 -8.65573158e+02]
+#  [ 6.15059203e-01  4.38794798e-01]
+#  [-9.80772121e+02 -6.69994487e-01]
+#  [-6.31308952e-01 -7.00712226e-01]]
+# [-2.87434319e-01  1.13521512e+00  4.39024519e-02  4.60910097e+01
+#  -1.43930355e+02  6.15059203e-01 -6.69994487e-01 -6.31308952e-01]
+
+
+        
         max_rewards = np.max(rollout_rewards, axis = 1)
+        # print(max_rewards)
+        # assert False
         if self.deltas_used > self.num_deltas:
             self.deltas_used = self.num_deltas
             
