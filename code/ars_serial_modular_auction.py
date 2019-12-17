@@ -33,6 +33,8 @@ Assumptions:
 - I suppose I can do sigmoid?
 - well actaully since there is only a single nonlinear transformation at the very end
 - you can just think of the sigmoid as part of the environment.
+
+- ok the only thing left to consider is to how to constrain the output of the agents
 """
 
 class AttrDict(dict):
@@ -115,6 +117,7 @@ class Worker(object):
 
     ####################### AUCTION ########################
 
+    # good
     def rollout_auction(self, shift = 0., rollout_length = None):
         """ 
         Performs one rollout of maximum length rollout_length. 
@@ -162,10 +165,6 @@ class Worker(object):
                 steps=len(agent_episode_data[a_id])
                 )
         # ********************* AUCTION ********************* #
-        # TODO: got  up to here
-
-        # assert False
-        # return total_reward, steps
         return agent_rollout_stats
 
     def record_payoffs(self, worker_auction, agent_episode_data, society_episode_data):
@@ -187,7 +186,7 @@ class Worker(object):
             payoffs = worker_auction._compute_payoffs(state, bids, winner, next_winner_bid, next_state, reward)
 
             for agent in worker_auction.get_active_agents():
-                agent_episode_data[agent.id][t].payoff = payoffs[agent.id]
+                agent_episode_data[agent.id][t].payoff = payoffs[agent.id]  # this line can be streamlined
 
         return agent_episode_data
 
@@ -207,15 +206,13 @@ class Worker(object):
     def evaluate_rollout_auction(self, master_auction):
         # set to false so that evaluation rollouts are not used for updating state statistics
         self.worker_auction.evaluate_mode()
-
-        self.worker_auction.sync_weights(master_auction)
+        self.worker_auction.sync_weights(master_auction)  # good
 
         # for evaluation we do not shift the rewards (shift = 0) and we use the
         # default rollout length (1000 for the MuJoCo locomotion tasks)
-        # reward, r_steps = self.rollout_auction(shift = 0., rollout_length = self.env.spec.timestep_limit)
-        # return reward, -1
-
         rollout_stats = self.rollout_auction(shift = 0., rollout_length = self.env.spec.timestep_limit)
+        
+        # assert False
         return rollout_stats, -1
 
     ####################### AUCTION ########################
@@ -240,78 +237,34 @@ class Worker(object):
         return [pos_reward, neg_reward], idx, pos_steps + neg_steps
 
     ####################### AUCTION ########################
+    # updating and syncing weights works
+    # good
     def train_rollout_auction(self, master_auction, shift):
-
-
-        # agent_ids = [a.id for a in master_auction.agents]
         agent_idx = {}
         agent_delta = {}
 
         for agent in self.worker_auction.agents:
             agent_idx[agent.id], agent_delta[agent.id] = self.deltas.get_delta(agent.get_num_weights())
-            agent_delta[agent.id] = self.delta_std * agent_delta[agent.id]
+            agent_delta[agent.id] = self.delta_std * agent_delta[agent.id]  # *= doesn't work!
 
-        # idx, delta = self.deltas.get_delta(self.worker_auction.get_num_weights())  # do this now.
-
-        # print(agent_idx)
-        # print(agent_delta)
-
-
-
-
-        # let's just index by agent.
-        # assert False
-
-        # delta = self.delta_std * delta  # *= doesn't work!
 
         # set to true so that state statistics are updated 
         self.worker_auction.train_mode()
 
         # compute reward and number of timesteps used for positive perturbation rollout
         self.worker_auction.sync_weights(master_auction)
-
-
-        # self.worker_auction.add_noise_to_weights(delta)
         for agent in self.worker_auction.agents:
             agent.add_noise_to_weights(agent_delta[agent.id])
-
-
-        # pos_reward, pos_steps  = self.rollout_auction(shift = shift)
         pos_rollout_stats = self.rollout_auction(shift=shift)
-
-        # assert False
 
         # compute reward and number of timesteps used for negative pertubation rollout
         self.worker_auction.sync_weights(master_auction)
-        # self.worker_auction.add_noise_to_weights(-delta)
-
         for agent in self.worker_auction.agents:
             agent.add_noise_to_weights(-agent_delta[agent.id])
-
-
-        # neg_reward, neg_steps = self.rollout_auction(shift = shift) 
         neg_rollout_stats = self.rollout_auction(shift=shift)
 
-        # return [pos_reward, neg_reward], idx, pos_steps + neg_steps
-        # return 
-
         # combine the rollout_stats
-        """
-            want:
-                {agent.id: [pos_reward, neg_reward]}
-
-            TODO
-        """
-
-
-        # print(pos_rollout_stats.keys())
-        # print(neg_rollout_stats.keys())
-
-        # print(pos_rollout_stats[1])
-        # assert False
-
         combined_rollout_stats = {}
-
         for agent_id in pos_rollout_stats.keys():
             combined_rollout_stats[agent_id] = AttrDict(
                 total_reward=[pos_rollout_stats[agent_id]['total_reward'], 
@@ -319,22 +272,7 @@ class Worker(object):
                 idx=agent_idx[agent_id],
                 steps=pos_rollout_stats[agent_id]['steps']+neg_rollout_stats[agent_id]['steps'])
 
-
         return combined_rollout_stats
-
-        # import pprint
-        # pprint.pprint(combined_rollout_stats)
-        # assert False
-
-
-        # {'total_reward': 1.3848068059602179, 'steps': 1000}
-
-        # [[-0.2874343190924852, -80.39446620678872], [-0.2741751994441139, 1.1352151248022513], [-1.2344374433917766, 0.04390245189159243], [-0.16335392998019987, 46.091009672902956], [-143.93035548261932, -865.573158185555], [0.615059203399084, 0.438794798424552], [-980.7721213808735, -0.6699944871959717], [-0.6313089521006933, -0.7007122255321678]]
-
-        # ok now working on this now.
-        # combine pos_rollout_stats; neg_rollout_stats
-
-
 
 
     ####################### AUCTION ########################
@@ -370,57 +308,51 @@ class Worker(object):
         """
         agent_ids = [a.id for a in master_auction.agents]
 
-        # rollout_rewards, deltas_idx = [], []
-        # steps = {agent.id: 0 for agent in master_auction.agents}
         rollout_rewards = {a_id: [] for a_id in agent_ids}
         deltas_idx = {a_id: [] for a_id in agent_ids}
         steps = {a_id: 0 for a_id in agent_ids}
-        # print(steps)
-        # assert False
 
         for i in range(num_rollouts):
 
             if evaluate:
-                # rollout_reward, rollout_idx = self.evaluate_rollout_auction(master_auction)
                 rollout_stats, rollout_idx = self.evaluate_rollout_auction(master_auction)
 
                 # figure out what to do here
                 for a_id in agent_ids:
                     deltas_idx[a_id].append(-1)
+
+
+                for a_id in agent_ids:
+                    rollout_rewards[a_id].append(rollout_stats[a_id].total_reward)
             else:
-                # rollout_reward, rollout_idx, rollout_steps = self.train_rollout_auction(master_auction, shift)
-
                 rollout_stats = self.train_rollout_auction(master_auction, shift)
-
 
                 # import pprint
                 # pprint.pprint(rollout_stats)
-                # assert False
-
-
-                # assert False
 
                 for a_id in agent_ids:
-                    # print(rollout_stats[a_id])
                     steps[a_id] += rollout_stats[a_id].steps
 
                 # figure out what to do here
                 for a_id in agent_ids:
                     deltas_idx[a_id].append(rollout_stats[a_id].idx)
 
-            for a_id in agent_ids:
-                rollout_rewards[a_id].append(rollout_stats[a_id].total_reward)
+                for a_id in agent_ids:
+                    rollout_rewards[a_id].append(rollout_stats[a_id].total_reward)
 
-            # deltas_idx.append(rollout_idx)
-            # assert False
+                # print('i', i)
+                # print('steps')
+                # pprint.pprint(steps)
+                # print('deltas_idx')
+                # pprint.pprint(deltas_idx)
+                # print('rollout_rewards')
+                # pprint.pprint(rollout_rewards)
+                # if i == 2:
+                #     assert False
 
-        # print(steps)
-
-        # assert False
         return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps" : steps}
 
         # note that you could actually just have the agent dictionary be always the top level.
-
 
     ####################### AUCTION ########################
 
@@ -491,13 +423,6 @@ class ARS_Sampler(object):
                                              num_rollouts = 1,
                                              shift = self.shift,
                                              evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
-        # print(num_rollouts)  # 25
-        # print(num_deltas)  # 100
-        # print(self.num_workers)  # 4
-        # print(len(results_one))  # 4
-        # print(len(results_two))  # 0
-        # print(len(results_one+results_two))  # 4
-        # assert False
         return results_one + results_two
     ####################### AUCTION ########################
 
@@ -540,45 +465,52 @@ class ARS_Sampler(object):
                 # to be honest you should do this per agent
                 self.timesteps += result["steps"][0]
             for agent_id in agent_ids:
-                agent_rollout_rewards[agent_id] += result['rollout_rewards'][agent_id]
                 agent_deltas_idx[agent_id] += result['deltas_idx'][agent_id]
+                agent_rollout_rewards[agent_id] += result['rollout_rewards'][agent_id]
 
         for agent_id in agent_ids:
-            agent_rollout_rewards[agent_id] = np.array(agent_rollout_rewards[agent_id], dtype=np.float64)
             agent_deltas_idx[agent_id] = np.array(agent_deltas_idx[agent_id])
+            agent_rollout_rewards[agent_id] = np.array(agent_rollout_rewards[agent_id], dtype=np.float64)
+
+        # if not evaluate:
+        #     import pprint
+        #     pprint.pprint(agent_rollout_rewards)
+        #     pprint.pprint(agent_deltas_idx)
+        #     assert False
 
         return agent_deltas_idx, agent_rollout_rewards
 
     # actually to be honest you can consolidate_experience_auction for each agent in the outer loop
 
-
     ####################### AUCTION ########################
 
 
-
-
-    def update_master_from_workers(self, master_agent, workers):
+    def update_master_from_workers(self, master_auction, workers):
+        # print('update_master_from_workers')
         for worker in workers:
-            master_agent.update_filter(worker.worker_agent)
-        master_agent.stats_increment()
+            master_auction.update_filter(worker.worker_auction)
+        master_auction.stats_increment()
 
-    def sync_workers_to_master(self, master_agent, workers):
-        master_agent.clear_filter_buffer()
+    def sync_workers_to_master(self, master_auction, workers):
+        # print('sync_workers_to_master')
+        master_auction.clear_filter_buffer()
         # sync all workers
         for worker in workers:
-            worker.worker_agent.sync_filter(master_agent)
+            worker.worker_auction.sync_filter(master_auction)
         for worker in workers:
-            worker.worker_agent.stats_increment()
+            worker.worker_auction.stats_increment()
 
     # note that this is all about syncing and updating the filter
-    def sync_statistics(self, master_agent):
+    def sync_statistics(self, master_auction):
+        # print('beginning of sync_statistics')
         t1 = time.time()
         # 1. sync master agent to workers
-        self.update_master_from_workers(master_agent, self.workers)
+        self.update_master_from_workers(master_auction, self.workers)
         # 2. broadcast master agent to workers
-        self.sync_workers_to_master(master_agent, self.workers)
+        self.sync_workers_to_master(master_auction, self.workers)
         t2 = time.time()
         print('\tTime to sync statistics:', t2 - t1)
+        # assert False
 
 
 """
@@ -695,7 +627,6 @@ class ARSExperiment(object):
         # results = self.sampler.gather_experience(num_rollouts, evaluate, self.master_agent)
         # deltas_idx, rollout_rewards = self.sampler.consolidate_experience(results, evaluate)
 
-
         ####################### AUCTION ########################
         """
         what does it mean for the sampler to gather_experience
@@ -705,7 +636,6 @@ class ARSExperiment(object):
         results_auction = self.sampler.gather_experience_auction(
             num_rollouts, evaluate, self.master_auction)
         deltas_idx_auction, rollout_rewards_auction = self.sampler.consolidate_experience_auction(results_auction, evaluate)
-        # assert False
 
         ####################### AUCTION ########################
         for agent_id in rollout_rewards_auction:
@@ -723,13 +653,16 @@ class ARSExperiment(object):
         """ 
         Perform one update step of the policy weights.
         """
+        # import ipdb
+        # ipdb.set_trace()
         deltas_idx, rollout_rewards = self.aggregate_rollouts()
-        # assert False
+
+        # print('deltas_idx', deltas_idx)
+        # print('rollout_rewards', rollout_rewards)
+
         # actually this interface seems to make sense.
-        # self.master_agent.update(self.rl_alg, deltas_idx, rollout_rewards)
         self.master_auction.update(self.rl_alg, deltas_idx, rollout_rewards)
-        # assert False
-        self.sampler.sync_statistics(self.master_agent)
+        self.sampler.sync_statistics(self.master_auction)
 
         # 12/15: 11:56pm stack pointer here. Seems that things can compiile. 
         # now it's just a matter if things are correct.
@@ -749,6 +682,7 @@ class ARSExperiment(object):
 
             t1 = time.time()
             self.train_step()
+            # assert False
             t2 = time.time()
             print('\tTotal time of one step', t2 - t1)           
         return 

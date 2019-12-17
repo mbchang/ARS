@@ -84,6 +84,7 @@ class RunningStat(object):
         return other
 
     def push(self, x):
+        # print('pushed')
         x = np.asarray(x)
         # Unvectorized update of the running statistics.
         assert x.shape == self._M.shape, ("x.shape = {}, self.shape = {}"
@@ -106,10 +107,25 @@ class RunningStat(object):
         delta = self._M - other._M
         delta2 = delta * delta
         M = (n1 * self._M + n2 * other._M) / n
+        # print('n1', n1, 'self._M', self._M, 'other._M', other._M, 'n', n)
         S = self._S + other._S + delta2 * n1 * n2 / n
+        # print('self._S', self._S, 'other._S', other._S, 'delta2', delta2, 'n1', n1, 'n2', n2, 'n', n)
         self._n = n
         self._M = M
         self._S = S
+        # assert False
+
+
+# ok actually need to investigate the update
+
+#   M = (n1 * self._M + n2 * other._M) / n
+# n1 0 self._M [0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.] other._M [0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.] n 0
+
+#   S = self._S + other._S + delta2 * n1 * n2 / n
+# self._S [0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.] other._S [0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.] delta2 [0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.] n1 0 n2 0 n 0
+
+
+
 
     def __repr__(self):
         return '(n={}, mean_mean={}, mean_std={})'.format(
@@ -276,5 +292,5 @@ def test_combining_stat():
         assert np.allclose(rs.std, rs1.std)
 
 
-test_running_stat()
-test_combining_stat()
+# test_running_stat()
+# test_combining_stat()

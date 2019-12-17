@@ -78,6 +78,7 @@ class ARS_MasterAuction(Base_ARS_Auction):
         # note that the a_id should correspond
         for a_id, agent in enumerate(self.agents):
             assert a_id == agent.id == other.agents[a_id].id
+            # print('updating filter for agent {}'.format(a_id))
             agent.update_filter(other.agents[a_id])
 
     def clear_filter_buffer(self):

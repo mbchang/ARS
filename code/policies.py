@@ -83,6 +83,7 @@ class ARS_MasterAgent(Base_ARS_Agent):
     #########################################################
     # observation filter stuff
     def update_filter(self, other):
+        # print('updating filter for agent {}'.format(self.id))
         self.observation_filter.update(other.get_filter())
 
     def clear_filter_buffer(self):
