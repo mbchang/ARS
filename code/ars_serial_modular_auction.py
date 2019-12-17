@@ -19,6 +19,7 @@ from policies_auction import ARS_LinearAuction, ARS_MasterLinearAuction
 ####################### AUCTION ########################
 from ars_serial_modular import ARS_Sampler as Base_ARS_Sampler
 from ars_serial_modular import ARSExperiment as Base_ARSExperiment
+from ars_serial_modular import Worker as Base_Worker
 from shared_noise import *
 
 from rl_alg import ARS as ARS_RL_Alg
@@ -43,7 +44,7 @@ class AttrDict(dict):
   __getattr__ = dict.__getitem__
   __setattr__ = dict.__setitem__    
 
-class Worker(object):
+class Worker(Base_Worker):
     """ 
     Object class for parallel rollout generation.
 
@@ -57,27 +58,17 @@ class Worker(object):
 
     def __init__(self, env_seed,
                  env_name='',
-                 agent_args = None,
+                 organism_builder=None,
                  deltas=None,
                  rollout_length=1000,
                  delta_std=0.02):
-
-        # initialize OpenAI environment for each worker
-        self.env = gym.make(env_name)
-        self.env.seed(env_seed)
-
-        # each worker gets access to the shared noise table
-        # with independent random streams for sampling
-        # from the shared noise table. 
-        self.deltas = SharedNoiseTable(deltas, env_seed + 7)
-
-        ####################### AUCTION ########################
-        self.worker_organism  = create_auction(
-            agent_args, ARS_LinearAuction, ARS_LinearAgent)
-        ####################### AUCTION ######################
-            
-        self.delta_std = delta_std
-        self.rollout_length = rollout_length
+        super(Worker, self).__init__(
+            env_seed=env_seed,
+            env_name=env_name,
+            organism_builder=organism_builder,
+            deltas=deltas,
+            rollout_length=rollout_length,
+            delta_std=delta_std)
 
     ####################### AUCTION ########################
 
@@ -223,7 +214,7 @@ class ARS_Sampler(Base_ARS_Sampler):
             shift,
             seed, 
             env_name,
-            agent_args,
+            organism_builder,
             deltas_id,
             rollout_length,
             delta_std,
@@ -234,7 +225,7 @@ class ARS_Sampler(Base_ARS_Sampler):
             shift=shift,
             seed=seed, 
             env_name=env_name,
-            agent_args=agent_args,
+            organism_builder=organism_builder,
             deltas_id=deltas_id,
             rollout_length=rollout_length,
             delta_std=delta_std,
@@ -294,7 +285,7 @@ class ARSExperiment(Base_ARSExperiment):
     Object class implementing the ARS algorithm.
     """
     def __init__(self, 
-                 agent_args=None,
+                 organism_builder=None,
                  logdir=None, 
                  params=None,
                  master_organism=None,
@@ -302,7 +293,7 @@ class ARSExperiment(Base_ARSExperiment):
                  ):
 
         super(ARSExperiment, self).__init__(
-            agent_args=agent_args,
+            organism_builder=organism_builder,
             logdir=logdir,
             params=params,
             master_organism=master_organism,
@@ -346,7 +337,8 @@ def run_ars(params):
                    'ac_dim':ac_dim}
 
     ARS = ARSExperiment(
-                     agent_args=agent_args,
+                     organism_builder=lambda: create_auction(
+                        agent_args, ARS_LinearAuction, ARS_LinearAgent),
                      logdir=logdir,
                      params=params,
                      master_organism=create_auction(
