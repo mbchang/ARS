@@ -145,19 +145,6 @@ class Worker(Base_Worker):
 
         return agent_episode_data
 
-
-    def evaluate_rollout(self, master_organism):
-        # set to false so that evaluation rollouts are not used for updating state statistics
-        self.worker_organism.evaluate_mode()
-        self.worker_organism.sync_weights(master_organism)  # good
-
-        # for evaluation we do not shift the rewards (shift = 0) and we use the
-        # default rollout length (1000 for the MuJoCo locomotion tasks)
-        rollout_stats = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
-        
-        return rollout_stats
-
-
     def train_rollout(self, master_organism, shift):
         agent_idx = {}
         agent_delta = {}
@@ -193,7 +180,7 @@ class Worker(Base_Worker):
 
         return combined_rollout_stats
 
-
+    # this can be combined
     def do_rollouts(self, master_organism, num_rollouts = 1, shift = 1, evaluate = False):
         """ 
         Generate multiple rollouts with a policy parametrized by w_policy.

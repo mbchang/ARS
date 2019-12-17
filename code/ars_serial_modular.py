@@ -73,17 +73,17 @@ class Worker(object):
             total_reward += (reward - shift)
             if done:
                 break
-            
-        return total_reward, steps
 
+        return {'total_reward': total_reward, 'steps': steps}
+            
     def evaluate_rollout(self, master_organism):
         # set to false so that evaluation rollouts are not used for updating state statistics
         self.worker_organism.evaluate_mode()
         self.worker_organism.sync_weights(master_organism)
         # for evaluation we do not shift the rewards (shift = 0) and we use the
         # default rollout length (1000 for the MuJoCo locomotion tasks)
-        reward, r_steps = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
-        return reward, -1
+        rollout_stats = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
+        return rollout_stats
 
     def train_rollout(self, master_organism, shift):
         idx, delta = self.deltas.get_delta(self.worker_organism.get_num_weights())
@@ -102,7 +102,7 @@ class Worker(object):
         self.worker_organism.add_noise_to_weights(-delta)
         neg_reward, neg_steps = self.rollout(shift = shift)
 
-        return [pos_reward, neg_reward], idx, pos_steps + neg_steps
+        return {'total_reward': [pos_reward, neg_reward], 'idx': idx, 'steps': pos_steps + neg_steps}
 
 
     def do_rollouts(self, master_organism, num_rollouts = 1, shift = 1, evaluate = False):
@@ -116,9 +116,14 @@ class Worker(object):
         for i in range(num_rollouts):
 
             if evaluate:
-                rollout_reward, rollout_idx = self.evaluate_rollout(master_organism)
+                rollout_stats = self.evaluate_rollout(master_organism)
+                rollout_reward, rollout_idx = rollout_stats['total_reward'], -1
             else:
-                rollout_reward, rollout_idx, rollout_steps = self.train_rollout(master_organism, shift)
+                rollout_stats = self.train_rollout(master_organism, shift)
+                rollout_reward = rollout_stats['total_reward']
+                rollout_idx = rollout_stats['idx']
+                rollout_steps = rollout_stats['steps']
+
                 steps += rollout_steps
 
             rollout_rewards.append(rollout_reward)
