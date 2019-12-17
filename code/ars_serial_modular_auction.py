@@ -69,28 +69,17 @@ class Worker(object):
         # from the shared noise table. 
         self.deltas = SharedNoiseTable(deltas, env_seed + 7)
 
-
         ####################### AUCTION ########################
-        self.worker_auction  = create_auction(
+        self.worker_organism  = create_auction(
             agent_args, ARS_LinearAuction, ARS_LinearAgent)
-        # test this now.
-        # this could definitely be refactored
-        ####################### AUCTION ########################
-
-
-        ################################################
-        if agent_args['type'] == 'linear':
-            self.worker_agent = ARS_LinearAgent(agent_args)
-        else:
-            raise NotImplementedError
-        # ---
-        # this should be replaced by an agent builder
-        # or you could literally just pass in a clone.
-        ################################################
+        ####################### AUCTION ######################
             
         self.delta_std = delta_std
         self.rollout_length = rollout_length
 
+    ####################### AUCTION ########################
+
+    # good
     def rollout(self, shift = 0., rollout_length = None):
         """ 
         Performs one rollout of maximum length rollout_length. 
@@ -102,41 +91,14 @@ class Worker(object):
 
         total_reward = 0.
         steps = 0
-
-        ob = self.env.reset()
-        for i in range(rollout_length):
-            action = self.worker_agent.forward(ob)
-            ob, reward, done, _ = self.env.step(action)
-            steps += 1
-            total_reward += (reward - shift)
-            if done:
-                break
-            
-        return total_reward, steps
-
-
-    ####################### AUCTION ########################
-
-    # good
-    def rollout_auction(self, shift = 0., rollout_length = None):
-        """ 
-        Performs one rollout of maximum length rollout_length. 
-        At each time-step it substracts shift from the reward.
-        """
-        
-        if rollout_length is None:
-            rollout_length = self.rollout_length
-
-        total_reward = 0.
-        steps = 0
         # ********************* AUCTION ********************* #
-        agent_episode_data = {a.id: [] for a in self.worker_auction.get_active_agents()}
+        agent_episode_data = {a.id: [] for a in self.worker_organism.get_active_agents()}
         episode_data = []
         # ********************* AUCTION ********************* #
 
         ob = self.env.reset()
         for i in range(rollout_length):
-            action, winner, bids = self.worker_auction.forward(ob)
+            action, winner, bids = self.worker_organism.forward(ob)
             next_ob, reward, done, _ = self.env.step(action)
             steps += 1
             total_reward += (reward - shift)
@@ -155,7 +117,7 @@ class Worker(object):
         # ********************* AUCTION ********************* #
         # now compute payoffs of the agent
         agent_episode_data = self.record_payoffs(
-            self.worker_auction, agent_episode_data, episode_data)
+            self.worker_organism, agent_episode_data, episode_data)
 
         # now compute the total reward for each agent
         agent_rollout_stats = AttrDict()
@@ -167,11 +129,11 @@ class Worker(object):
         # ********************* AUCTION ********************* #
         return agent_rollout_stats
 
-    def record_payoffs(self, worker_auction, agent_episode_data, society_episode_data):
+    def record_payoffs(self, worker_organism, agent_episode_data, society_episode_data):
         for t in range(len(society_episode_data)):
             state = society_episode_data[t].state
             winner = society_episode_data[t].winner
-            bids = OrderedDict([(a.id, agent_episode_data[a.id][t]['action']) for a in worker_auction.get_active_agents()])  
+            bids = OrderedDict([(a.id, agent_episode_data[a.id][t]['action']) for a in worker_organism.get_active_agents()])  
 
             if t < len(society_episode_data)-1:
                 next_winner = society_episode_data[t+1].winner
@@ -183,85 +145,51 @@ class Worker(object):
 
             reward = society_episode_data[t].reward  # not t+1!
 
-            payoffs = worker_auction._compute_payoffs(state, bids, winner, next_winner_bid, next_state, reward)
+            payoffs = worker_organism._compute_payoffs(state, bids, winner, next_winner_bid, next_state, reward)
 
-            for agent in worker_auction.get_active_agents():
+            for agent in worker_organism.get_active_agents():
                 agent_episode_data[agent.id][t].payoff = payoffs[agent.id]  # this line can be streamlined
 
         return agent_episode_data
 
     ####################### AUCTION ########################
-    def evaluate_rollout(self, master_agent):
-        # set to false so that evaluation rollouts are not used for updating state statistics
-        self.worker_agent.evaluate_mode()
-
-        self.worker_agent.sync_weights(master_agent)
-
-        # for evaluation we do not shift the rewards (shift = 0) and we use the
-        # default rollout length (1000 for the MuJoCo locomotion tasks)
-        reward, r_steps = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
-        return reward, -1
 
     ####################### AUCTION ########################
-    def evaluate_rollout_auction(self, master_auction):
+    def evaluate_rollout(self, master_organism):
         # set to false so that evaluation rollouts are not used for updating state statistics
-        self.worker_auction.evaluate_mode()
-        self.worker_auction.sync_weights(master_auction)  # good
+        self.worker_organism.evaluate_mode()
+        self.worker_organism.sync_weights(master_organism)  # good
 
         # for evaluation we do not shift the rewards (shift = 0) and we use the
         # default rollout length (1000 for the MuJoCo locomotion tasks)
-        rollout_stats = self.rollout_auction(shift = 0., rollout_length = self.env.spec.timestep_limit)
+        rollout_stats = self.rollout(shift = 0., rollout_length = self.env.spec.timestep_limit)
         
-        # assert False
-        return rollout_stats, -1
+        return rollout_stats
 
-    ####################### AUCTION ########################
 
-    def train_rollout(self, master_agent, shift):
-        idx, delta = self.deltas.get_delta(self.worker_agent.get_num_weights())
-        delta = self.delta_std * delta  # *= doesn't work!
-
-        # set to true so that state statistics are updated 
-        self.worker_agent.train_mode()
-
-        # compute reward and number of timesteps used for positive perturbation rollout
-        self.worker_agent.sync_weights(master_agent)
-        self.worker_agent.add_noise_to_weights(delta)
-        pos_reward, pos_steps  = self.rollout(shift = shift)
-
-        # compute reward and number of timesteps used for negative pertubation rollout
-        self.worker_agent.sync_weights(master_agent)
-        self.worker_agent.add_noise_to_weights(-delta)
-        neg_reward, neg_steps = self.rollout(shift = shift) 
-
-        return [pos_reward, neg_reward], idx, pos_steps + neg_steps
-
-    ####################### AUCTION ########################
-    # updating and syncing weights works
-    # good
-    def train_rollout_auction(self, master_auction, shift):
+    def train_rollout(self, master_organism, shift):
         agent_idx = {}
         agent_delta = {}
 
-        for agent in self.worker_auction.agents:
+        for agent in self.worker_organism.agents:
             agent_idx[agent.id], agent_delta[agent.id] = self.deltas.get_delta(agent.get_num_weights())
             agent_delta[agent.id] = self.delta_std * agent_delta[agent.id]  # *= doesn't work!
 
 
         # set to true so that state statistics are updated 
-        self.worker_auction.train_mode()
+        self.worker_organism.train_mode()
 
         # compute reward and number of timesteps used for positive perturbation rollout
-        self.worker_auction.sync_weights(master_auction)
-        for agent in self.worker_auction.agents:
+        self.worker_organism.sync_weights(master_organism)
+        for agent in self.worker_organism.agents:
             agent.add_noise_to_weights(agent_delta[agent.id])
-        pos_rollout_stats = self.rollout_auction(shift=shift)
+        pos_rollout_stats = self.rollout(shift=shift)
 
         # compute reward and number of timesteps used for negative pertubation rollout
-        self.worker_auction.sync_weights(master_auction)
-        for agent in self.worker_auction.agents:
+        self.worker_organism.sync_weights(master_organism)
+        for agent in self.worker_organism.agents:
             agent.add_noise_to_weights(-agent_delta[agent.id])
-        neg_rollout_stats = self.rollout_auction(shift=shift)
+        neg_rollout_stats = self.rollout(shift=shift)
 
         # combine the rollout_stats
         combined_rollout_stats = {}
@@ -275,84 +203,18 @@ class Worker(object):
         return combined_rollout_stats
 
 
-    ####################### AUCTION ########################
-
-
-    def do_rollouts(self, master_agent, num_rollouts = 1, shift = 1, evaluate = False):
+    def do_rollouts(self, master_organism, num_rollouts = 1, shift = 1, evaluate = False):
         """ 
         Generate multiple rollouts with a policy parametrized by w_policy.
         """
-
-        rollout_rewards, deltas_idx = [], []
-        steps = 0
-
+        all_rollout_stats = []
         for i in range(num_rollouts):
-
             if evaluate:
-                rollout_reward, rollout_idx = self.evaluate_rollout(master_agent)
+                rollout_stats = self.evaluate_rollout(master_organism)
             else:
-                rollout_reward, rollout_idx, rollout_steps = self.train_rollout(master_agent, shift)
-                steps += rollout_steps
-
-            rollout_rewards.append(rollout_reward)
-            deltas_idx.append(rollout_idx)
-
-        return AttrDict(deltas_idx=deltas_idx, rollout_rewards=rollout_rewards, steps=steps)
-
-
-    ####################### AUCTION ########################
-    # no change
-    def do_rollouts_auction(self, master_auction, num_rollouts = 1, shift = 1, evaluate = False):
-        """ 
-        Generate multiple rollouts with a policy parametrized by w_policy.
-        """
-        agent_ids = [a.id for a in master_auction.agents]
-
-        rollout_rewards = {a_id: [] for a_id in agent_ids}
-        deltas_idx = {a_id: [] for a_id in agent_ids}
-        steps = {a_id: 0 for a_id in agent_ids}
-
-        for i in range(num_rollouts):
-
-            if evaluate:
-                rollout_stats, rollout_idx = self.evaluate_rollout_auction(master_auction)
-
-                # figure out what to do here
-                for a_id in agent_ids:
-                    deltas_idx[a_id].append(-1)
-
-
-                for a_id in agent_ids:
-                    rollout_rewards[a_id].append(rollout_stats[a_id].total_reward)
-            else:
-                rollout_stats = self.train_rollout_auction(master_auction, shift)
-
-                # import pprint
-                # pprint.pprint(rollout_stats)
-
-                for a_id in agent_ids:
-                    steps[a_id] += rollout_stats[a_id].steps
-
-                # figure out what to do here
-                for a_id in agent_ids:
-                    deltas_idx[a_id].append(rollout_stats[a_id].idx)
-
-                for a_id in agent_ids:
-                    rollout_rewards[a_id].append(rollout_stats[a_id].total_reward)
-
-                # print('i', i)
-                # print('steps')
-                # pprint.pprint(steps)
-                # print('deltas_idx')
-                # pprint.pprint(deltas_idx)
-                # print('rollout_rewards')
-                # pprint.pprint(rollout_rewards)
-                # if i == 2:
-                #     assert False
-
-        return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps" : steps}
-
-        # note that you could actually just have the agent dictionary be always the top level.
+                rollout_stats = self.train_rollout(master_organism, shift)
+            all_rollout_stats.append(rollout_stats)
+        return all_rollout_stats
 
     ####################### AUCTION ########################
 
@@ -383,29 +245,9 @@ class ARS_Sampler(object):
 
         self.timesteps = 0
 
-    def gather_experience(self, num_rollouts, evaluate, master_agent):
-        if num_rollouts is None:
-            num_deltas = self.num_deltas
-        else:
-            num_deltas = num_rollouts
-            
-        num_rollouts = int(num_deltas / self.num_workers)
-
-        # parallel generation of rollouts
-        results_one = [worker.do_rollouts(master_agent,
-                                             num_rollouts = num_rollouts,
-                                             shift = self.shift,
-                                             evaluate=evaluate) for worker in self.workers]
-
-        results_two = [worker.do_rollouts(master_agent,
-                                             num_rollouts = 1,
-                                             shift = self.shift,
-                                             evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
-        return results_one + results_two
-
     ####################### AUCTION ########################
     # no change
-    def gather_experience_auction(self, num_rollouts, evaluate, master_auction):
+    def gather_experience(self, num_rollouts, evaluate, master_organism):
         if num_rollouts is None:
             num_deltas = self.num_deltas
         else:
@@ -414,33 +256,20 @@ class ARS_Sampler(object):
         num_rollouts = int(num_deltas / self.num_workers)
 
         # parallel generation of rollouts
-        results_one = [worker.do_rollouts_auction(master_auction,
+        results_one = [worker.do_rollouts(master_organism,
                                              num_rollouts = num_rollouts,
                                              shift = self.shift,
                                              evaluate=evaluate) for worker in self.workers]
 
-        results_two = [worker.do_rollouts_auction(master_auction,
+        results_two = [worker.do_rollouts(master_organism,
                                              num_rollouts = 1,
                                              shift = self.shift,
                                              evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
         return results_one + results_two
     ####################### AUCTION ########################
 
-    def consolidate_experience(self, results, evaluate):
-        rollout_rewards, deltas_idx = [], [] 
-
-        for result in results:
-            if not evaluate:
-                self.timesteps += result["steps"]
-            deltas_idx += result['deltas_idx']  # extends
-            rollout_rewards += result['rollout_rewards']  # extends
-
-        deltas_idx = np.array(deltas_idx)
-        rollout_rewards = np.array(rollout_rewards, dtype = np.float64)
-        return deltas_idx, rollout_rewards
-
     ####################### AUCTION ########################
-    def consolidate_experience_auction(self, results, evaluate):
+    def consolidate_experience(self, results, evaluate):
         """
             results: 
                 list of length num_workers
@@ -455,28 +284,24 @@ class ARS_Sampler(object):
             you can consider how you would structure the information beforehand
             in order 
         """
-        agent_ids = [a.id for a in self.workers[0].worker_auction.agents]
-
+        agent_ids = [a.id for a in self.workers[0].worker_organism.agents]
         agent_rollout_rewards = {a_id: [] for a_id in agent_ids}
         agent_deltas_idx = {a_id: [] for a_id in agent_ids}
 
         for result in results:
-            if not evaluate:
-                # to be honest you should do this per agent
-                self.timesteps += result["steps"][0]
-            for agent_id in agent_ids:
-                agent_deltas_idx[agent_id] += result['deltas_idx'][agent_id]
-                agent_rollout_rewards[agent_id] += result['rollout_rewards'][agent_id]
+            for subresult in result:
+                if not evaluate:
+                    self.timesteps += subresult[0]['steps']
+                for agent_id in agent_ids:
+                    if not evaluate:
+                        agent_deltas_idx[agent_id].append(subresult[agent_id]['idx'])
+                    else:
+                        agent_deltas_idx[agent_id].append(-1)
+                    agent_rollout_rewards[agent_id].append(subresult[agent_id]['total_reward'])
 
         for agent_id in agent_ids:
             agent_deltas_idx[agent_id] = np.array(agent_deltas_idx[agent_id])
             agent_rollout_rewards[agent_id] = np.array(agent_rollout_rewards[agent_id], dtype=np.float64)
-
-        # if not evaluate:
-        #     import pprint
-        #     pprint.pprint(agent_rollout_rewards)
-        #     pprint.pprint(agent_deltas_idx)
-        #     assert False
 
         return agent_deltas_idx, agent_rollout_rewards
 
@@ -485,32 +310,28 @@ class ARS_Sampler(object):
     ####################### AUCTION ########################
 
 
-    def update_master_from_workers(self, master_auction, workers):
-        # print('update_master_from_workers')
+    def update_master_from_workers(self, master_organism, workers):
         for worker in workers:
-            master_auction.update_filter(worker.worker_auction)
-        master_auction.stats_increment()
+            master_organism.update_filter(worker.worker_organism)
+        master_organism.stats_increment()
 
-    def sync_workers_to_master(self, master_auction, workers):
-        # print('sync_workers_to_master')
-        master_auction.clear_filter_buffer()
+    def sync_workers_to_master(self, master_organism, workers):
+        master_organism.clear_filter_buffer()
         # sync all workers
         for worker in workers:
-            worker.worker_auction.sync_filter(master_auction)
+            worker.worker_organism.sync_filter(master_organism)
         for worker in workers:
-            worker.worker_auction.stats_increment()
+            worker.worker_organism.stats_increment()
 
     # note that this is all about syncing and updating the filter
-    def sync_statistics(self, master_auction):
-        # print('beginning of sync_statistics')
+    def sync_statistics(self, master_organism):
         t1 = time.time()
         # 1. sync master agent to workers
-        self.update_master_from_workers(master_auction, self.workers)
+        self.update_master_from_workers(master_organism, self.workers)
         # 2. broadcast master agent to workers
-        self.sync_workers_to_master(master_auction, self.workers)
+        self.sync_workers_to_master(master_organism, self.workers)
         t2 = time.time()
         print('\tTime to sync statistics:', t2 - t1)
-        # assert False
 
 
 """
@@ -583,7 +404,7 @@ class ARSExperiment(object):
 
 
         ####################### AUCTION ########################
-        self.master_auction  = create_auction(
+        self.master_organism  = create_auction(
             agent_args, ARS_MasterLinearAuction, ARS_MasterLinearAgent)
         # test this now.
         # this could definitely be refactored
@@ -633,9 +454,12 @@ class ARSExperiment(object):
         and consolidate  experience witht the auction?
 
         """
-        results_auction = self.sampler.gather_experience_auction(
-            num_rollouts, evaluate, self.master_auction)
-        deltas_idx_auction, rollout_rewards_auction = self.sampler.consolidate_experience_auction(results_auction, evaluate)
+        results_auction = self.sampler.gather_experience(
+            num_rollouts, evaluate, self.master_organism)
+        deltas_idx_auction, rollout_rewards_auction = self.sampler.consolidate_experience(results_auction, evaluate)
+
+
+        # assert False
 
         ####################### AUCTION ########################
         for agent_id in rollout_rewards_auction:
@@ -657,12 +481,9 @@ class ARSExperiment(object):
         # ipdb.set_trace()
         deltas_idx, rollout_rewards = self.aggregate_rollouts()
 
-        # print('deltas_idx', deltas_idx)
-        # print('rollout_rewards', rollout_rewards)
-
         # actually this interface seems to make sense.
-        self.master_auction.update(self.rl_alg, deltas_idx, rollout_rewards)
-        self.sampler.sync_statistics(self.master_auction)
+        self.master_organism.update(self.rl_alg, deltas_idx, rollout_rewards)
+        self.sampler.sync_statistics(self.master_organism)
 
         # 12/15: 11:56pm stack pointer here. Seems that things can compiile. 
         # now it's just a matter if things are correct.
@@ -682,7 +503,6 @@ class ARSExperiment(object):
 
             t1 = time.time()
             self.train_step()
-            # assert False
             t2 = time.time()
             print('\tTotal time of one step', t2 - t1)           
         return 
