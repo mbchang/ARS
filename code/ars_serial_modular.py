@@ -146,7 +146,8 @@ class ARS_Sampler(object):
         deltas_id,
         rollout_length,
         delta_std,
-        num_workers):
+        num_workers,
+        worker_builder=Worker):
 
         self.num_deltas = num_deltas
         self.shift = shift
@@ -154,7 +155,7 @@ class ARS_Sampler(object):
         # initialize workers with different random seeds
         print('Initializing workers.') 
         self.num_workers = num_workers
-        self.workers = [Worker(seed + 7 * i,
+        self.workers = [worker_builder(seed + 7 * i,
                                       env_name=env_name,
                                       agent_args=agent_args,
                                       deltas=deltas_id,
@@ -220,54 +221,29 @@ class ARS_Sampler(object):
         print('\tTime to sync statistics:', t2 - t1)
 
 
-"""
-Your worker will be a copy of the organism, whether the organism is a society or agent.
-This means that the worker should not know about the policy.
-You need methods to clone the agent and update the agent.
-    - let's implement that now.
-    - the agent needs a method to copy itself
-    - the agent needs a method to update weights
-    - the agent needs a method to get weights
-
-Ok, let's combine ARS_Agent with Policy.
-Let's just make everything interface with Agent now.
-
-"""
-
-
-
 class ARSExperiment(object):
     """ 
     Object class implementing the ARS algorithm.
     """
 
-    def __init__(self, env_name='HalfCheetah-v1',
+    def __init__(self, 
                  agent_args=None,
-                 num_workers=32, 
-                 num_deltas=320,  # N
-                 deltas_used=320,  # b
-                 delta_std=0.02, 
                  logdir=None, 
-                 rollout_length=1000,
-                 step_size=0.01,
-                 shift='constant zero',
                  params=None,
-                 seed=123):
+                 master_organism=None,
+                 sampler_builder=None,
+                 ):
 
         logz.configure_output_dir(logdir)
         logz.save_params(params)
         
-        env = gym.make(env_name)
+        env = gym.make(params['env_name'])
         
         self.action_size = env.action_space.shape[0]
         self.ob_size = env.observation_space.shape[0]
-        self.num_deltas = num_deltas
-        self.deltas_used = deltas_used
-        self.rollout_length = rollout_length
-        self.step_size = step_size
-        self.delta_std = delta_std
+        self.num_deltas = params['n_directions']
+        self.deltas_used = params['deltas_used']
         self.logdir = logdir
-        self.shift = shift
         self.params = params
         self.max_past_avg_reward = float('-inf')
         self.num_episodes_used = float('inf')
@@ -275,27 +251,25 @@ class ARSExperiment(object):
         # create shared table for storing noise
         print("Creating deltas table.")
         deltas_id = create_shared_noise_serial()
-        self.deltas = SharedNoiseTable(deltas_id, seed = seed + 3)
+        self.deltas = SharedNoiseTable(deltas_id, seed = params['seed'] + 3)
         print('Created deltas table.')
 
         ########################################################
 
-        self.master_organism = ARS_MasterLinearAgent(
-            agent_args=agent_args, 
-            step_size=step_size)
+        self.master_organism = master_organism
+        self.sampler = sampler_builder(
+            num_deltas=params['n_directions'],
+            shift=params['shift'],
+            num_workers=params['n_workers'],
+            seed=params['seed'],
+            env_name=params['env_name'],
+            agent_args=agent_args,
+            deltas_id=deltas_id,
+            rollout_length=params['rollout_length'],
+            delta_std=params['delta_std'], 
+            )
 
-        self.sampler = ARS_Sampler(
-            num_deltas=self.num_deltas, 
-            shift=self.shift,
-            num_workers=num_workers,
-            seed=seed, 
-            env_name=env_name, 
-            agent_args=agent_args, 
-            deltas_id=deltas_id, 
-            rollout_length=rollout_length, 
-            delta_std=delta_std, 
-
-            )  # maybe we'd need to merge Sampler and Agent
+             # maybe we'd need to merge Sampler and Agent
         # agent holds the parameters, but sampler takes the agent and does the parallel rollouts
         # so agent should not have the workers at all...
         # agent should just contain the parameter.
@@ -305,9 +279,10 @@ class ARSExperiment(object):
 
         self.rl_alg = ARS_RL_Alg(
             deltas=self.deltas,  # noise table
-            num_deltas=self.num_deltas,  # N
-            deltas_used=self.deltas_used  # b
+            num_deltas=params['n_directions'],  # N
+            deltas_used=params['deltas_used']  # b
             )
+
         ########################################################
 
     def aggregate_rollouts(self, num_rollouts = None, evaluate = False):
@@ -319,7 +294,7 @@ class ARSExperiment(object):
         results = self.sampler.gather_experience(num_rollouts, evaluate, self.master_organism)
         deltas_idx, rollout_rewards = self.sampler.consolidate_experience(results, evaluate)
 
-        print('\tMaximum reward of collected rollouts:', rollout_rewards.max())
+        # print('\tMaximum reward of collected rollouts:', rollout_rewards.max())
         t2 = time.time()
 
         print('\t\tTime to generate rollouts:', t2 - t1)
@@ -333,7 +308,6 @@ class ARSExperiment(object):
         """ 
         Perform one update step of the policy weights.
         """
-        print('la')
         deltas_idx, rollout_rewards = self.aggregate_rollouts()
         # actually this interface seems to make sense.
         self.master_organism.update(self.rl_alg, deltas_idx, rollout_rewards)
@@ -391,18 +365,20 @@ def run_ars(params):
                    'ob_dim':ob_dim,
                    'ac_dim':ac_dim}
 
-    ARS = ARSExperiment(env_name=params['env_name'],
+    ARS = ARSExperiment(
+                    # env_name=params['env_name'],
                      agent_args=agent_args,
-                     num_workers=params['n_workers'], 
-                     num_deltas=params['n_directions'],
-                     deltas_used=params['deltas_used'],
-                     step_size=params['step_size'],
-                     delta_std=params['delta_std'], 
+                     # num_deltas=params['n_directions'],
+                     # deltas_used=params['deltas_used'],
                      logdir=logdir,
-                     rollout_length=params['rollout_length'],
-                     shift=params['shift'],
                      params=params,
-                     seed = params['seed'])
+                     # seed = params['seed'],
+                     master_organism=ARS_MasterLinearAgent(
+                        agent_args=agent_args, 
+                        step_size=params['step_size']),
+                     sampler_builder=ARS_Sampler,
+                     )
+
         
     ARS.main_loop(params['n_iter'])
        

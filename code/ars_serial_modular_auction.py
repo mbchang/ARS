@@ -17,6 +17,8 @@ from policies import ARS_LinearAgent, ARS_MasterLinearAgent
 ####################### AUCTION ########################
 from policies_auction import ARS_LinearAuction, ARS_MasterLinearAuction
 ####################### AUCTION ########################
+from ars_serial_modular import ARS_Sampler as Base_ARS_Sampler
+from ars_serial_modular import ARSExperiment as Base_ARSExperiment
 from shared_noise import *
 
 from rl_alg import ARS as ARS_RL_Alg
@@ -152,9 +154,7 @@ class Worker(object):
 
         return agent_episode_data
 
-    ####################### AUCTION ########################
 
-    ####################### AUCTION ########################
     def evaluate_rollout(self, master_organism):
         # set to false so that evaluation rollouts are not used for updating state statistics
         self.worker_organism.evaluate_mode()
@@ -215,60 +215,33 @@ class Worker(object):
                 rollout_stats = self.train_rollout(master_organism, shift)
             all_rollout_stats.append(rollout_stats)
         return all_rollout_stats
-
-    ####################### AUCTION ########################
-
     
 
-class ARS_Sampler(object):
-    def __init__(self, num_deltas, shift,
-        seed, 
-        env_name,
-        agent_args,  # can look at this
-        deltas_id,
-        rollout_length,
-        delta_std,
-        num_workers):
+class ARS_Sampler(Base_ARS_Sampler):
+    def __init__(self, 
+            num_deltas, 
+            shift,
+            seed, 
+            env_name,
+            agent_args,
+            deltas_id,
+            rollout_length,
+            delta_std,
+            num_workers,
+            worker_builder=Worker):
+        super(ARS_Sampler, self).__init__(
+            num_deltas=num_deltas, 
+            shift=shift,
+            seed=seed, 
+            env_name=env_name,
+            agent_args=agent_args,
+            deltas_id=deltas_id,
+            rollout_length=rollout_length,
+            delta_std=delta_std,
+            num_workers=num_workers,
+            worker_builder=worker_builder
+            )
 
-        self.num_deltas = num_deltas
-        self.shift = shift
-
-        # initialize workers with different random seeds
-        print('Initializing workers.') 
-        self.num_workers = num_workers
-        self.workers = [Worker(seed + 7 * i,
-                                      env_name=env_name,
-                                      agent_args=agent_args,
-                                      deltas=deltas_id,
-                                      rollout_length=rollout_length,
-                                      delta_std=delta_std) for i in range(num_workers)]
-
-        self.timesteps = 0
-
-    ####################### AUCTION ########################
-    # no change
-    def gather_experience(self, num_rollouts, evaluate, master_organism):
-        if num_rollouts is None:
-            num_deltas = self.num_deltas
-        else:
-            num_deltas = num_rollouts
-            
-        num_rollouts = int(num_deltas / self.num_workers)
-
-        # parallel generation of rollouts
-        results_one = [worker.do_rollouts(master_organism,
-                                             num_rollouts = num_rollouts,
-                                             shift = self.shift,
-                                             evaluate=evaluate) for worker in self.workers]
-
-        results_two = [worker.do_rollouts(master_organism,
-                                             num_rollouts = 1,
-                                             shift = self.shift,
-                                             evaluate=evaluate) for worker in self.workers[:(num_deltas % self.num_workers)]]
-        return results_one + results_two
-    ####################### AUCTION ########################
-
-    ####################### AUCTION ########################
     def consolidate_experience(self, results, evaluate):
         """
             results: 
@@ -305,50 +278,6 @@ class ARS_Sampler(object):
 
         return agent_deltas_idx, agent_rollout_rewards
 
-    # actually to be honest you can consolidate_experience_auction for each agent in the outer loop
-
-    ####################### AUCTION ########################
-
-
-    def update_master_from_workers(self, master_organism, workers):
-        for worker in workers:
-            master_organism.update_filter(worker.worker_organism)
-        master_organism.stats_increment()
-
-    def sync_workers_to_master(self, master_organism, workers):
-        master_organism.clear_filter_buffer()
-        # sync all workers
-        for worker in workers:
-            worker.worker_organism.sync_filter(master_organism)
-        for worker in workers:
-            worker.worker_organism.stats_increment()
-
-    # note that this is all about syncing and updating the filter
-    def sync_statistics(self, master_organism):
-        t1 = time.time()
-        # 1. sync master agent to workers
-        self.update_master_from_workers(master_organism, self.workers)
-        # 2. broadcast master agent to workers
-        self.sync_workers_to_master(master_organism, self.workers)
-        t2 = time.time()
-        print('\tTime to sync statistics:', t2 - t1)
-
-
-"""
-Your worker will be a copy of the organism, whether the organism is a society or agent.
-This means that the worker should not know about the policy.
-You need methods to clone the agent and update the agent.
-    - let's implement that now.
-    - the agent needs a method to copy itself
-    - the agent needs a method to update weights
-    - the agent needs a method to get weights
-
-Ok, let's combine ARS_Agent with Policy.
-Let's just make everything interface with Agent now.
-
-"""
-
-
 def create_auction(agent_args, auction_builder, agent_builder):
     import copy
     action_dim = agent_args['ac_dim']
@@ -360,156 +289,29 @@ def create_auction(agent_args, auction_builder, agent_builder):
     return auction_builder(agents, action_dim)
 
 
-class ARSExperiment(object):
+class ARSExperiment(Base_ARSExperiment):
     """ 
     Object class implementing the ARS algorithm.
     """
-
-    def __init__(self, env_name='HalfCheetah-v1',
+    def __init__(self, 
                  agent_args=None,
-                 num_workers=32, 
-                 num_deltas=320,  # N
-                 deltas_used=320,  # b
-                 delta_std=0.02, 
                  logdir=None, 
-                 rollout_length=1000,
-                 step_size=0.01,
-                 shift='constant zero',
                  params=None,
-                 seed=123):
+                 master_organism=None,
+                 sampler_builder=None,
+                 ):
 
-        logz.configure_output_dir(logdir)
-        logz.save_params(params)
-        
-        env = gym.make(env_name)
-        
-        self.action_size = env.action_space.shape[0]
-        self.ob_size = env.observation_space.shape[0]
-        self.num_deltas = num_deltas
-        self.deltas_used = deltas_used
-        self.rollout_length = rollout_length
-        self.step_size = step_size
-        self.delta_std = delta_std
-        self.logdir = logdir
-        self.shift = shift
-        self.params = params
-        self.max_past_avg_reward = float('-inf')
-        self.num_episodes_used = float('inf')
-
-        # create shared table for storing noise
-        print("Creating deltas table.")
-        deltas_id = create_shared_noise_serial()
-        self.deltas = SharedNoiseTable(deltas_id, seed = seed + 3)
-        print('Created deltas table.')
-
-
-        ####################### AUCTION ########################
-        self.master_organism  = create_auction(
-            agent_args, ARS_MasterLinearAuction, ARS_MasterLinearAgent)
-        # test this now.
-        # this could definitely be refactored
-        ####################### AUCTION ########################
-
-        self.master_agent = ARS_MasterLinearAgent(
-            agent_args=agent_args, 
-            step_size=step_size)
-
-        self.sampler = ARS_Sampler(
-            num_deltas=self.num_deltas, 
-            shift=self.shift,
-            num_workers=num_workers,
-            seed=seed, 
-            env_name=env_name, 
-            agent_args=agent_args, 
-            deltas_id=deltas_id, 
-            rollout_length=rollout_length, 
-            delta_std=delta_std, 
-
-            )  # maybe we'd need to merge Sampler and Agent
-        # agent holds the parameters, but sampler takes the agent and does the parallel rollouts
-        # so agent should not have the workers at all...
-        # agent should just contain the parameter.
-        # but the sampler would need to take the agent in.
-        # so the sampler is the thing that takes a single agent, and creates a bunch of workers
-        # modeled the agent.
-
-        self.rl_alg = ARS_RL_Alg(
-            deltas=self.deltas,  # noise table
-            num_deltas=self.num_deltas,  # N
-            deltas_used=self.deltas_used  # b
+        super(ARSExperiment, self).__init__(
+            agent_args=agent_args,
+            logdir=logdir,
+            params=params,
+            master_organism=master_organism,
+            sampler_builder=sampler_builder,
             )
-
-    def aggregate_rollouts(self, num_rollouts = None, evaluate = False):
-        """ 
-        Aggregate update step from rollouts generated in parallel.
-        """
-        t1 = time.time()
-
-        # results = self.sampler.gather_experience(num_rollouts, evaluate, self.master_agent)
-        # deltas_idx, rollout_rewards = self.sampler.consolidate_experience(results, evaluate)
-
-        ####################### AUCTION ########################
-        """
-        what does it mean for the sampler to gather_experience
-        and consolidate  experience witht the auction?
-
-        """
-        results_auction = self.sampler.gather_experience(
-            num_rollouts, evaluate, self.master_organism)
-        deltas_idx_auction, rollout_rewards_auction = self.sampler.consolidate_experience(results_auction, evaluate)
-
-
-        # assert False
-
-        ####################### AUCTION ########################
-        for agent_id in rollout_rewards_auction:
-            print('\tMaximum reward of collected rollouts for agent {}: {}'.format( agent_id, rollout_rewards_auction[agent_id].max()))
-        t2 = time.time()
-
-        print('\t\tTime to generate rollouts:', t2 - t1)
-
-        if evaluate:
-            return rollout_rewards_auction
-        else:
-            return deltas_idx_auction, rollout_rewards_auction
-
-    def train_step(self):
-        """ 
-        Perform one update step of the policy weights.
-        """
-        # import ipdb
-        # ipdb.set_trace()
-        deltas_idx, rollout_rewards = self.aggregate_rollouts()
-
-        # actually this interface seems to make sense.
-        self.master_organism.update(self.rl_alg, deltas_idx, rollout_rewards)
-        self.sampler.sync_statistics(self.master_organism)
-
-        # 12/15: 11:56pm stack pointer here. Seems that things can compiile. 
-        # now it's just a matter if things are correct.
-        # assert False
-        return
-
-    def main_loop(self, num_iter):
-        start = time.time()
-        for i in range(num_iter):
-            print('iter ', i)  
-
-            # record statistics every 10 iterations
-            if (i % 2 == 0):
-                self.eval_step(start, i)
-                if self.params['debug'] and i == 4:
-                    return  # for debugging
-
-            t1 = time.time()
-            self.train_step()
-            t2 = time.time()
-            print('\tTotal time of one step', t2 - t1)           
-        return 
 
     def eval_step(self, start, i):
         rewards = self.aggregate_rollouts(num_rollouts = 100, evaluate = True)
-        np.savez(self.logdir + "/lin_policy_plus", self.master_agent.get_state())
+        np.savez(self.logdir + "/lin_policy_plus", self.master_organism.get_state())
         
         print(sorted(self.params.items()))
         logz.log_tabular("Time", time.time() - start)
@@ -543,18 +345,16 @@ def run_ars(params):
                    'ob_dim':ob_dim,
                    'ac_dim':ac_dim}
 
-    ARS = ARSExperiment(env_name=params['env_name'],
+    ARS = ARSExperiment(
                      agent_args=agent_args,
-                     num_workers=params['n_workers'], 
-                     num_deltas=params['n_directions'],
-                     deltas_used=params['deltas_used'],
-                     step_size=params['step_size'],
-                     delta_std=params['delta_std'], 
                      logdir=logdir,
-                     rollout_length=params['rollout_length'],
-                     shift=params['shift'],
                      params=params,
-                     seed = params['seed'])
+                     master_organism=create_auction(
+                        agent_args, 
+                        ARS_MasterLinearAuction, 
+                        ARS_MasterLinearAgent),
+                     sampler_builder=ARS_Sampler,
+                     )
         
     ARS.main_loop(params['n_iter'])
        
