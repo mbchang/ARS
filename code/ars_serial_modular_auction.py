@@ -101,7 +101,7 @@ class Worker(Base_Worker):
                     AttrDict(state=ob, action=bids[agent_id])  # note that we assume fixed length so we do not care about the mask!
                     )
             episode_data.append(
-                AttrDict(state=ob, winner=winner, next_state=next_ob, reward=reward))
+                AttrDict(state=ob, winner=winner, next_state=next_ob, reward=reward))  # note that this doesn't take shift into account
             # ********************* AUCTION ********************* #
             if done:
                 break
@@ -119,6 +119,11 @@ class Worker(Base_Worker):
                 total_reward=sum(s.payoff for s in agent_episode_data[a_id]),
                 steps=len(agent_episode_data[a_id])
                 )
+        # # global reward
+        agent_rollout_stats[-1] = AttrDict(
+            total_reward=total_reward,
+            steps=steps
+            )
         # ********************* AUCTION ********************* #
         return agent_rollout_stats
 
@@ -153,7 +158,6 @@ class Worker(Base_Worker):
             agent_idx[agent.id], agent_delta[agent.id] = self.deltas.get_delta(agent.get_num_weights())
             agent_delta[agent.id] = self.delta_std * agent_delta[agent.id]  # *= doesn't work!
 
-
         # set to true so that state statistics are updated 
         self.worker_organism.train_mode()
 
@@ -175,25 +179,18 @@ class Worker(Base_Worker):
             combined_rollout_stats[agent_id] = AttrDict(
                 total_reward=[pos_rollout_stats[agent_id]['total_reward'], 
                         neg_rollout_stats[agent_id]['total_reward']],
-                idx=agent_idx[agent_id],
+                # idx=agent_idx[agent_id],
                 steps=pos_rollout_stats[agent_id]['steps']+neg_rollout_stats[agent_id]['steps'])
+            if agent_id > -1:
+                # if it's not global, then record the index
+                # print(combined_rollout_stats[agent_id])
+                combined_rollout_stats[agent_id].idx = agent_idx[agent_id]
+
+        # ok, so for global, you do not care about the idx, but you do care about the steps
+        # what's the easiest way around this?
 
         return combined_rollout_stats
 
-    # this can be combined
-    def do_rollouts(self, master_organism, num_rollouts = 1, shift = 1, evaluate = False):
-        """ 
-        Generate multiple rollouts with a policy parametrized by w_policy.
-        """
-        all_rollout_stats = []
-        for i in range(num_rollouts):
-            if evaluate:
-                rollout_stats = self.evaluate_rollout(master_organism)
-            else:
-                rollout_stats = self.train_rollout(master_organism, shift)
-            all_rollout_stats.append(rollout_stats)
-        return all_rollout_stats
-    
 
 class ARS_Sampler(Base_ARS_Sampler):
     def __init__(self, 
@@ -238,22 +235,25 @@ class ARS_Sampler(Base_ARS_Sampler):
         agent_ids = [a.id for a in self.workers[0].worker_organism.agents]
         agent_rollout_rewards = {a_id: [] for a_id in agent_ids}
         agent_deltas_idx = {a_id: [] for a_id in agent_ids}
+        global_rollout_rewards = []
 
         for result in results:
             for subresult in result:
                 if not evaluate:
-                    self.timesteps += subresult[0]['steps']
+                    self.timesteps += subresult[-1]['steps']
                 for agent_id in agent_ids:
-                    if not evaluate:
+                    if not evaluate:  #  this can be combined
                         agent_deltas_idx[agent_id].append(subresult[agent_id]['idx'])
                     else:
                         agent_deltas_idx[agent_id].append(-1)
                     agent_rollout_rewards[agent_id].append(subresult[agent_id]['total_reward'])
+                global_rollout_rewards.append(subresult[-1]['total_reward'])
 
         for agent_id in agent_ids:
             agent_deltas_idx[agent_id] = np.array(agent_deltas_idx[agent_id])
             agent_rollout_rewards[agent_id] = np.array(agent_rollout_rewards[agent_id], dtype=np.float64)
-
+        global_rollout_rewards = np.array(global_rollout_rewards, dtype=np.float64)
+        agent_rollout_rewards[-1] = global_rollout_rewards  # global
         return agent_deltas_idx, agent_rollout_rewards
 
 def create_auction(agent_args, auction_builder, agent_builder):
@@ -295,10 +295,11 @@ class ARSExperiment(Base_ARSExperiment):
         logz.log_tabular("Time", time.time() - start)
         logz.log_tabular("Iteration", i + 1)
         for agent_id in rewards:
-            logz.log_tabular("Agent {} AverageReward".format(agent_id), np.mean(rewards[agent_id]))
-            logz.log_tabular("Agent {} StdRewards".format(agent_id), np.std(rewards[agent_id]))
-            logz.log_tabular("Agent {} MaxRewardRollout".format(agent_id), np.max(rewards[agent_id]))
-            logz.log_tabular("Agent {} MinRewardRollout".format(agent_id), np.min(rewards[agent_id]))
+            prefix = 'Global' if agent_id == -1 else 'Agent {}'.format(agent_id)
+            logz.log_tabular("{} AverageReward".format(prefix), np.mean(rewards[agent_id]))
+            logz.log_tabular("{} StdRewards".format(prefix), np.std(rewards[agent_id]))
+            logz.log_tabular("{} MaxRewardRollout".format(prefix), np.max(rewards[agent_id]))
+            logz.log_tabular("{} MinRewardRollout".format(prefix), np.min(rewards[agent_id]))
 
         logz.log_tabular("timesteps", self.sampler.timesteps)
         logz.dump_tabular()
@@ -315,7 +316,8 @@ def run_ars(params):
 
     env = gym.make(params['env_name'])
     ob_dim = env.observation_space.shape[0]
-    ac_dim = env.action_space.shape[0]
+    is_disc_action = len(env.action_space.shape) == 0
+    ac_dim = env.action_space.n if is_disc_action else env.action_space.shape[0]
 
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
     agent_args={'type':'linear',

@@ -74,7 +74,11 @@ class Worker(object):
             if done:
                 break
 
-        return {'total_reward': total_reward, 'steps': steps}
+        rollout_stats = AttrDict(
+            total_reward=total_reward,
+            steps=steps)
+
+        return rollout_stats
             
     def evaluate_rollout(self, master_organism):
         # set to false so that evaluation rollouts are not used for updating state statistics
@@ -95,41 +99,36 @@ class Worker(object):
         # compute reward and number of timesteps used for positive perturbation rollout
         self.worker_organism.sync_weights(master_organism)
         self.worker_organism.add_noise_to_weights(delta)
-        pos_reward, pos_steps  = self.rollout(shift = shift)
+        pos_rollout_stats = self.rollout(shift = shift)
 
         # compute reward and number of timesteps used for negative pertubation rollout
         self.worker_organism.sync_weights(master_organism)
         self.worker_organism.add_noise_to_weights(-delta)
-        neg_reward, neg_steps = self.rollout(shift = shift)
+        neg_rollout_stats = self.rollout(shift = shift)
 
-        return {'total_reward': [pos_reward, neg_reward], 'idx': idx, 'steps': pos_steps + neg_steps}
+        combined_rollout_stats = AttrDict(
+            total_reward=[pos_rollout_stats['total_reward'], neg_rollout_stats['total_reward']],
+            idx=idx,
+            steps=pos_rollout_stats['steps']+neg_rollout_stats['steps']
+            )
+        return combined_rollout_stats
+
 
 
     def do_rollouts(self, master_organism, num_rollouts = 1, shift = 1, evaluate = False):
         """ 
         Generate multiple rollouts with a policy parametrized by w_policy.
         """
-
-        rollout_rewards, deltas_idx = [], []
-        steps = 0
+        all_rollout_stats = []
 
         for i in range(num_rollouts):
 
             if evaluate:
                 rollout_stats = self.evaluate_rollout(master_organism)
-                rollout_reward, rollout_idx = rollout_stats['total_reward'], -1
             else:
                 rollout_stats = self.train_rollout(master_organism, shift)
-                rollout_reward = rollout_stats['total_reward']
-                rollout_idx = rollout_stats['idx']
-                rollout_steps = rollout_stats['steps']
-
-                steps += rollout_steps
-
-            rollout_rewards.append(rollout_reward)
-            deltas_idx.append(rollout_idx)
-
-        return {'deltas_idx': deltas_idx, 'rollout_rewards': rollout_rewards, "steps" : steps}
+            all_rollout_stats.append(rollout_stats)
+        return all_rollout_stats
     
 
 class ARS_Sampler(object):
@@ -182,10 +181,13 @@ class ARS_Sampler(object):
         rollout_rewards, deltas_idx = [], [] 
 
         for result in results:
-            if not evaluate:
-                self.timesteps += result["steps"]
-            deltas_idx += result['deltas_idx']
-            rollout_rewards += result['rollout_rewards']
+            for subresult in result:
+                if not evaluate:
+                    self.timesteps += subresult['steps']
+                    deltas_idx.append(subresult['idx'])
+                else:
+                    deltas_idx.append(-1)
+                rollout_rewards.append(subresult['total_reward'])
 
         deltas_idx = np.array(deltas_idx)
         rollout_rewards = np.array(rollout_rewards, dtype = np.float64)  # (100,) for eval; (num_deltas, 2) for train
@@ -234,10 +236,10 @@ class ARSExperiment(object):
         
         env = gym.make(params['env_name'])
         
-        self.action_size = env.action_space.shape[0]
-        self.ob_size = env.observation_space.shape[0]
-        self.num_deltas = params['n_directions']
-        self.deltas_used = params['deltas_used']
+        # self.action_size = env.action_space.shape[0]
+        # self.ob_size = env.observation_space.shape[0]
+        # self.num_deltas = params['n_directions']
+        # self.deltas_used = params['deltas_used']
         self.logdir = logdir
         self.params = params
         self.max_past_avg_reward = float('-inf')
@@ -292,7 +294,6 @@ class ARSExperiment(object):
         results = self.sampler.gather_experience(num_rollouts, evaluate, self.master_organism)
         deltas_idx, rollout_rewards = self.sampler.consolidate_experience(results, evaluate)
 
-        # print('\tMaximum reward of collected rollouts:', rollout_rewards.max())
         t2 = time.time()
 
         print('\t\tTime to generate rollouts:', t2 - t1)
@@ -355,7 +356,8 @@ def run_ars(params):
 
     env = gym.make(params['env_name'])
     ob_dim = env.observation_space.shape[0]
-    ac_dim = env.action_space.shape[0]
+    is_disc_action = len(env.action_space.shape) == 0
+    ac_dim = env.action_space.n if is_disc_action else env.action_space.shape[0]
 
     # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
     agent_args={'type':'linear',

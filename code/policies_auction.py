@@ -138,22 +138,14 @@ class ARS_MasterLinearAuction(ARS_LinearAuction, ARS_MasterAuction):
         ARS_LinearAuction.__init__(self, agents, action_dim)  # only need to initialize once?
 
     def update(self, rl_alg, deltas_idx, rollout_rewards):
-        #  you can just write it as you want it to look.
-        assert len(self.get_active_agents()) == len(deltas_idx.keys()) == len(rollout_rewards.keys())
-        # for agent_id in deltas_idx:
-        #     agent.update(rl_alg, deltas_idx_agent, rollout_rewards_agent)
+        # rollout_rewards.pop(-1)  #  pop the global reward here. Note that this mutates the object.
 
+        #  you can just write it as you want it to look.
+        assert len(self.get_active_agents()) == len(deltas_idx.keys()) == len(rollout_rewards.keys())-1
         for agent in self.get_active_agents():
-            # print('>>>>>>>>>>', agent.id)
             deltas_idx_agent = deltas_idx[agent.id]
             rollout_rewards_agent = rollout_rewards[agent.id]
-
-            # import pprint
-            # pprint.pprint(deltas_idx_agent)
-            # pprint.pprint(rollout_rewards_agent)
-
             agent.update(rl_alg, deltas_idx_agent, rollout_rewards_agent)
-            # assert False
 
 
 
