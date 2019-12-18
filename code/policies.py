@@ -113,6 +113,7 @@ class ARS_LinearAgent(Base_ARS_Agent):
 
 
     def forward(self, ob):
+        ob = ob.ravel() # hacky way to deal with images  (H, W, C) for images, (D,) for features
         ob = self.observation_filter(ob, update=self.should_update_filter)
         action = np.dot(self.weights, ob)
         if len(action) == 1:
