@@ -10,6 +10,9 @@ import time
 import os
 import numpy as np
 import gym
+# import gym_minigrid
+# from gym_minigrid.wrappers import ImgObsWrapper
+# import babyai
 import logz
 import utils
 import optimizers
@@ -20,10 +23,12 @@ from policies_auction import ARS_LinearAuction, ARS_MasterLinearAuction
 from ars_serial_modular import ARS_Sampler as Base_ARS_Sampler
 from ars_serial_modular import ARSExperiment as Base_ARSExperiment
 from ars_serial_modular import Worker as Base_Worker
+from ars_serial_modular import env_registry
 from shared_noise import *
 
 from rl_alg import ARS as ARS_RL_Alg
 from collections import OrderedDict
+
 
 
 """
@@ -179,11 +184,9 @@ class Worker(Base_Worker):
             combined_rollout_stats[agent_id] = AttrDict(
                 total_reward=[pos_rollout_stats[agent_id]['total_reward'], 
                         neg_rollout_stats[agent_id]['total_reward']],
-                # idx=agent_idx[agent_id],
                 steps=pos_rollout_stats[agent_id]['steps']+neg_rollout_stats[agent_id]['steps'])
             if agent_id > -1:
                 # if it's not global, then record the index
-                # print(combined_rollout_stats[agent_id])
                 combined_rollout_stats[agent_id].idx = agent_idx[agent_id]
 
         # ok, so for global, you do not care about the idx, but you do care about the steps
@@ -314,8 +317,8 @@ def run_ars(params):
     if not(os.path.exists(logdir)):
         os.makedirs(logdir)
 
-    env = gym.make(params['env_name'])
-    ob_dim = env.observation_space.shape[0]
+    env = env_registry.get_env_constructor(params['env_name'])()
+    ob_dim = np.prod(env.observation_space.shape)  # hacky for images, this will just multiply everything together
     is_disc_action = len(env.action_space.shape) == 0
     ac_dim = env.action_space.n if is_disc_action else env.action_space.shape[0]
 

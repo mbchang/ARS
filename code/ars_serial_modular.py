@@ -18,6 +18,11 @@ from shared_noise import *
 
 from rl_alg import ARS as ARS_RL_Alg
 
+from starter_code.env_config import EnvRegistry
+from starter_code.utils import AttrDict
+
+env_registry = EnvRegistry()
+
 class Worker(object):
     """ 
     Object class for parallel rollout generation.
@@ -38,7 +43,7 @@ class Worker(object):
                  delta_std=0.02):
 
         # initialize OpenAI environment for each worker
-        self.env = gym.make(env_name)
+        self.env = env_registry.get_env_constructor(env_name)()
         self.env.seed(env_seed)
 
         # each worker gets access to the shared noise table
@@ -223,7 +228,6 @@ class ARSExperiment(object):
     """
 
     def __init__(self, 
-                 # agent_args=None,
                  organism_builder=None,
                  logdir=None, 
                  params=None,
@@ -234,12 +238,8 @@ class ARSExperiment(object):
         logz.configure_output_dir(logdir)
         logz.save_params(params)
         
-        env = gym.make(params['env_name'])
+        # env = env_registry.get_env_constructor(params['env_name'])()
         
-        # self.action_size = env.action_space.shape[0]
-        # self.ob_size = env.observation_space.shape[0]
-        # self.num_deltas = params['n_directions']
-        # self.deltas_used = params['deltas_used']
         self.logdir = logdir
         self.params = params
         self.max_past_avg_reward = float('-inf')
@@ -262,7 +262,6 @@ class ARSExperiment(object):
             num_workers=params['n_workers'],
             seed=params['seed'],
             env_name=params['env_name'],
-            # agent_args=agent_args,
             organism_builder=organism_builder,#lambda: ARS_LinearAgent(agent_args)
             deltas_id=deltas_id,
             rollout_length=params['rollout_length'],
@@ -354,7 +353,7 @@ def run_ars(params):
     if not(os.path.exists(logdir)):
         os.makedirs(logdir)
 
-    env = gym.make(params['env_name'])
+    env = env_registry.get_env_constructor(params['env_name'])()
     ob_dim = env.observation_space.shape[0]
     is_disc_action = len(env.action_space.shape) == 0
     ac_dim = env.action_space.n if is_disc_action else env.action_space.shape[0]
@@ -366,7 +365,6 @@ def run_ars(params):
                    'ac_dim':ac_dim}
 
     ARS = ARSExperiment(
-                     # agent_args=agent_args,
                      logdir=logdir,
                      params=params,
                      organism_builder=lambda: ARS_LinearAgent(agent_args),
