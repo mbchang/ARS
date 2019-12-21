@@ -43,8 +43,8 @@ class ARS(RandomSearchRlAlg):
 
     def improve(self, agent, deltas_idx, rollout_rewards):
         t1 = time.time()
-        g_hat = self.compute_error(deltas_idx, rollout_rewards, agent.weights)
+        g_hat = self.compute_error(deltas_idx, rollout_rewards, agent.copy_weights())
         print("\tEuclidean norm of update step:", np.linalg.norm(g_hat))
-        agent.weights -= agent.optimizer._compute_step(g_hat).reshape(agent.weights.shape)
+        agent.add_to_weights(-agent.optimizer._compute_step(g_hat).reshape(agent.get_weight_shape()))
         t2 = time.time()
         print('\t\tTime to update weights', t2-t1)
