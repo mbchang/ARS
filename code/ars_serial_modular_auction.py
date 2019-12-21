@@ -16,7 +16,7 @@ import gym
 import logz
 import utils
 import optimizers
-from policies import ARS_LinearAgent, ARS_MasterLinearAgent
+from policies import ARS_LinearAgent, ARS_MasterLinearAgent, ARS_Conv2dAgent_PT, ARS_MasterConv2dAgent_PT
 ####################### AUCTION ########################
 from policies_auction import ARS_LinearAuction, ARS_MasterLinearAuction
 ####################### AUCTION ########################
@@ -262,7 +262,6 @@ class ARS_Sampler(Base_ARS_Sampler):
 def create_auction(agent_args, auction_builder, agent_builder):
     import copy
     action_dim = agent_args['ac_dim']
-    print('action_dim', action_dim)
     redundancy = 2
     subagent_args = copy.deepcopy(agent_args)
     subagent_args['ac_dim'] = 1
@@ -310,35 +309,63 @@ class ARSExperiment(Base_ARSExperiment):
 def run_ars(params):
 
     dir_path = params['dir_path']
+    params['exp_name'] = params['env_name']
 
     if not(os.path.exists(dir_path)):
         os.makedirs(dir_path)
-    logdir = dir_path
-    if not(os.path.exists(logdir)):
-        os.makedirs(logdir)
-
+    logdir = os.path.join(dir_path, params['exp_name'])
     env = env_registry.get_env_constructor(params['env_name'])()
-    ob_dim = np.prod(env.observation_space.shape)  # hacky for images, this will just multiply everything together
-    is_disc_action = len(env.action_space.shape) == 0
-    ac_dim = env.action_space.n if is_disc_action else env.action_space.shape[0]
 
-    # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
-    agent_args={'type':'linear',
-                   'ob_filter':params['filter'],
-                   'ob_dim':ob_dim,
-                   'ac_dim':ac_dim}
+    policy_type = 'linear'
+    if policy_type == 'cnn':
+        ob_dim = env.observation_space.shape
+        is_disc_action = len(env.action_space.shape) == 0
+        ac_dim = env.action_space.n if is_disc_action else env.action_space.shape[0]
 
-    ARS = ARSExperiment(
-                     organism_builder=lambda: create_auction(
-                        agent_args, ARS_LinearAuction, ARS_LinearAgent),
-                     logdir=logdir,
-                     params=params,
-                     master_organism=create_auction(
-                        agent_args, 
-                        ARS_MasterLinearAuction, 
-                        ARS_MasterLinearAgent),
-                     sampler_builder=ARS_Sampler,
-                     )
+        # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
+        agent_args={'type':'cnn',
+                       'ob_filter':params['filter'],
+                       'ob_dim':ob_dim,
+                       'ac_dim':ac_dim}
+
+        ARS = ARSExperiment(
+                         organism_builder=lambda: create_auction(
+                            agent_args, ARS_LinearAuction, ARS_Conv2dAgent_PT),
+                         logdir=logdir,
+                         params=params,
+                         master_organism=create_auction(
+                            agent_args, 
+                            ARS_MasterLinearAuction, 
+                            ARS_MasterConv2dAgent_PT),
+                         sampler_builder=ARS_Sampler,
+                         )
+
+    elif policy_type == 'linear':
+        ob_dim = [np.prod(env.observation_space.shape)]  # hacky for images, this will just multiply everything together
+        is_disc_action = len(env.action_space.shape) == 0
+        ac_dim = env.action_space.n if is_disc_action else env.action_space.shape[0]
+
+        # set policy parameters. Possible filters: 'MeanStdFilter' for v2, 'NoFilter' for v1.
+        agent_args={'type':'linear',
+                       'ob_filter':params['filter'],
+                       'ob_dim':ob_dim,
+                       'ac_dim':ac_dim}
+
+        ARS = ARSExperiment(
+                         organism_builder=lambda: create_auction(
+                            agent_args, ARS_LinearAuction, ARS_LinearAgent),
+                         logdir=logdir,
+                         params=params,
+                         master_organism=create_auction(
+                            agent_args, 
+                            ARS_MasterLinearAuction, 
+                            ARS_MasterLinearAgent),
+                         sampler_builder=ARS_Sampler,
+                         )
+    else:
+        assert False
+
+
         
     ARS.main_loop(params['n_iter'])
        

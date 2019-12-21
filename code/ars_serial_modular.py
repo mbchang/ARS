@@ -235,7 +235,6 @@ class ARSExperiment(object):
                  sampler_builder=None,
                  ):
 
-        params['exp_name'] = params['env_name']
         logz.configure_output_dir(logdir)
         logz.save_params(params)
                 
@@ -345,12 +344,11 @@ class ARSExperiment(object):
 def run_ars(params):
 
     dir_path = params['dir_path']
+    params['exp_name'] = params['env_name']
 
     if not(os.path.exists(dir_path)):
         os.makedirs(dir_path)
-    logdir = dir_path
-    if not(os.path.exists(logdir)):
-        os.makedirs(logdir)
+    logdir = os.path.join(dir_path, params['exp_name'])
 
     env = env_registry.get_env_constructor(params['env_name'])()
     ob_dim = env.observation_space.shape
