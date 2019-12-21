@@ -235,11 +235,10 @@ class ARSExperiment(object):
                  sampler_builder=None,
                  ):
 
+        params['exp_name'] = params['env_name']
         logz.configure_output_dir(logdir)
         logz.save_params(params)
-        
-        # env = env_registry.get_env_constructor(params['env_name'])()
-        
+                
         self.logdir = logdir
         self.params = params
         self.max_past_avg_reward = float('-inf')
@@ -354,7 +353,7 @@ def run_ars(params):
         os.makedirs(logdir)
 
     env = env_registry.get_env_constructor(params['env_name'])()
-    ob_dim = env.observation_space.shape[0]
+    ob_dim = env.observation_space.shape
     is_disc_action = len(env.action_space.shape) == 0
     ac_dim = env.action_space.n if is_disc_action else env.action_space.shape[0]
 
